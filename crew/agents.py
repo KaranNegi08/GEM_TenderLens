@@ -33,7 +33,7 @@ def get_crew_llm(
     else:
         return None
 
-    if not chosen_key or chosen_key == "your_llm_api_key_here":
+    if not chosen_key or chosen_key == "MISTRAL_API_KEY":
         logger.warning("No valid LLM API key provided for CrewAI LLM initialization.")
         return None
 
