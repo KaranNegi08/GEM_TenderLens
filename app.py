@@ -22,7 +22,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+from services.database import init_db
 from services.tender_service import TenderService
+
+# Initialize database schema tables
+init_db()
 
 tender_service = TenderService()
 available_tenders = tender_service.list_available_tenders()
