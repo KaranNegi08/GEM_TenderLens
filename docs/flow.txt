@@ -1,0 +1,205 @@
+================================================================================
+                       GeM TenderLens - System Flow
+        Multi-Agent Tender Proposal Comparison System Architecture & Flow
+================================================================================
+
+1. PROJECT OVERVIEW
+--------------------------------------------------------------------------------
+GeM TenderLens is an enterprise-grade GenAI multi-agent procurement evaluation system
+built with Streamlit, CrewAI, ChromaDB, Mistral AI, Cohere, Pydantic v2, PostgreSQL (with 
+automatic DB creation & SQLite fallback), Model Context Protocol (MCP), and LangSmith.
+It enables government procurement teams to compare vendor proposal emails and
+multi-format documents against official GeM tender packages, retrieve clause-level
+citations via RAG, perform normalized commercial comparison (L-1 ranking, GST, delivery SLA,
+MSE/MII preference), manage risk queues, record auditable sign-offs, and export 
+committee-ready evaluation packages (Markdown, HTML, JSON, PDF).
+
+
+2. HIGH-LEVEL WORKFLOW (5 INTEGRATED STAGES)
+--------------------------------------------------------------------------------
+  [ Stage 1: Tender Workspace ] ---> Upload Tender Package / BOQ / Corrigenda -> Chunk & Index to ChromaDB
+            |
+            v
+  [ Stage 2: Vendor Intake ]    ---> Ingest Vendor Emails & Attachments -> Extract Data & Index Proposals to ChromaDB
+            |
+            v
+  [ Stage 3: RAG Clause Search ]---> Dual-Source Query Routing -> Exact Page & Clause Evidence Citations
+            |
+            v
+  [ Stage 4: Multi-Agent Crew ] ---> CrewAI 8-Agent Workflow / Deterministic Engine -> Tech & Comm Matrix
+            |
+            v
+  [ Stage 5: Review & Export ]  ---> Committee Sign-Off & Audit Log -> Export MD / HTML / JSON / PDF Reports
+
+
+3. DETAILED STEP-BY-STEP OPERATIONAL FLOW
+--------------------------------------------------------------------------------
+
+STEP 1: TENDER WORKSPACE & KNOWLEDGE BASE SETUP (pages/1_tender_workspace.py & services/tender_service.py)
+---------------------------------------------------------------------------------------------------------
+1. User enters or selects a governing GeM Tender Reference ID (e.g., GEM/2026/B/7798305).
+2. User uploads official GeM tender package files:
+   - Official GeM Tender / Bid Document (.pdf / .txt)
+   - Technical Specifications & Line-Item Details (.pdf / .docx)
+   - Bill of Quantities (BOQ) (.csv / .xlsx)
+   - Eligibility & Qualification Criteria (.pdf)
+   - Special Terms & Conditions (STC) (.pdf)
+   - Corrigenda & Clarifications (.pdf / .txt)
+   - Internal Evaluation SOPs & Scoring Templates (.pdf / .docx)
+3. DocumentLoader (rag/document_loader.py) extracts text from supported digital files:
+   - Digital PDFs via PyMuPDF (fitz)
+   - Word Documents via python-docx
+   - Excel BOQ Files via openpyxl
+   - CSV Files via pandas
+   - RFC-822 Emails via email parser
+   - Performs OCR accessibility validation (verifying page text-density; scanned/image pages are flagged with is_scanned=True).
+4. DocumentChunker (rag/chunking.py) splits content by clause, section boundary, or BOQ line item:
+   - Sub-item codes (ELG-01 to ELG-05, TS-01 to TS-10, WAR-01) and specification bullet prefixes (Adjustability:, Warranty:) are preserved inside parent clause chunks (~1200 chars max) to prevent table row isolation.
+   - Table column headers (Clause ID, Requirement Name) are filtered so data rows stay tagged under their true parent section title.
+   - Commercial Quotation, Payment Terms, Delivery & Warranty sections form dedicated focused chunks to prevent vector dilution.
+   - Attaches 9 mandatory metadata tags: tender_id, document_id, document_type, document_version, clause_id, page_number, mandatory_flag, effective_date, source_file.
+5. Embeddings (rag/embeddings.py) are generated using Cohere API (embed-english-v3.0, 1024 dimensions) with 25-text batching and exponential backoff retry for HTTP 429 rate limits, with local SentenceTransformer fallback (all-MiniLM-L6-v2, 384 dimensions).
+6. Vectors and metadata are stored in an isolated ChromaDB collection (rag/chroma_client.py):
+   Collection Identifier: tender_<sanitized_tender_id> (e.g., tender_gem_2026_b_7798305).
+7. Automatic Re-indexing: Re-indexing a tender automatically re-indexes existing vendor proposal dossiers so vendor data is never lost.
+
+
+STEP 2: VENDOR SUBMISSION INTAKE & DOSSIER BUILDING (pages/2_vendor_intake.py & services/vendor_service.py)
+----------------------------------------------------------------------------------------------------------
+1. User ingests vendor proposal emails (.eml), quotations, technical brochures (.pdf/.docx/.txt), or packages.
+2. System aggregates text across all attached vendor documents into a structured Vendor Submission Dossier.
+3. Raw files are saved to local storage bucket (STORAGE_BUCKET) as immutable evidence.
+4. Transactional metadata is persisted in PostgreSQL / SQLite database via SQLAlchemy (services/database.py):
+   - Automatically verifies and creates target PostgreSQL database (e.g., tenderlens_db) on localhost:5432 if missing.
+   - Falls back to local SQLite database (./data/tenderlens_fallback.db) if PostgreSQL connection fails.
+5. Extraction Service parses structured proposal fields into Pydantic models (VendorSubmission, VendorProposal):
+   - Vendor ID & Legal Company Name (auto-detected from email headers / company branding)
+   - Quoted Base Price (INR) & Tax/GST Amount (INR)
+   - Offered Delivery Lead Time (Days) & Warranty Coverage (Months)
+   - Extracted Technical Specification Claims
+   - Submitted Compliance Certificates (MSE/Udyam, GST, OEM, ISO)
+   - Extraction Confidence Score (0.0 to 1.0)
+6. Vector Store Indexing: Vendor proposal files are chunked and indexed into the tender's ChromaDB collection with document_type="vendor_proposal".
+   - Chunk IDs are scoped with file basenames ({vendor_id}_{file_basename}_{chunk_id}) to prevent upsert collisions.
+7. Scanned Document Guardrail: Scanned/image-only documents are flagged for mandatory human review:
+   "MANUAL REVIEW REQUIRED: Scanned or image-only document detected."
+
+
+STEP 3: RAG RETRIEVAL & CLAUSE SEARCH WORKFLOW (pages/3_rag_search.py & rag/retriever.py)
+-----------------------------------------------------------------------------------------
+1. Selection: Reviewer or agent selects active GeM tender package baseline.
+2. Dual-Source Query Routing: When querying (especially for vendor questions), KnowledgeRetriever queries BOTH:
+   - Governing Tender Requirement & Specification Chunks (document_type != "vendor_proposal")
+   - Vendor Proposal Offer & Quote Chunks (document_type == "vendor_proposal")
+3. Keyword Match Boosting: Hybrid re-ranking applies exponentiated term boosting ((match_count**2) * 15.0) to strongly prioritize exact keyword matches (e.g. "advance payment").
+4. Balanced Context Assembly: Ensures top vendor proposal chunks AND top governing tender rules are both included in candidate context passed to LLM.
+5. Mistral AI Synthesis: Mistral AI (mistral-small-latest) synthesizes a direct, comprehensive answer comparing vendor claims against tender rules.
+6. Evidence Citation: Every returned finding includes EvidenceCitation metadata:
+   - Source Filename (source_file)
+   - Page Number (page_number)
+   - Clause ID (clause_id)
+   - Direct Text Excerpt (excerpt)
+
+
+STEP 4: MULTI-AGENT EVALUATION CREW (pages/4_vendor_comparison.py & crew/)
+--------------------------------------------------------------------------
+CrewAI coordinates 8 specialized procurement agents sequentially or hierarchically:
+
+1. Tender Selection Agent: Identifies governing GeM tender package baseline and active corrigenda.
+2. Knowledge Base Agent: Manages chunking, metadata tagging, and ChromaDB embeddings.
+3. Email Intake Agent: Organizes vendor proposal emails, attachment manifests, and revision histories.
+4. Accessibility Auditor Agent: Flags scanned non-searchable PDFs requiring manual OCR review.
+5. RAG Clause Retrieval Agent: Queries ChromaDB for mandatory clauses and vendor evidence.
+6. Technical Compliance Evaluator Agent: Maps vendor specification claims against mandatory tender requirements.
+7. Commercial Comparison Agent: Normalizes base prices, taxes, delivery SLAs, warranty terms; calculates L-1 ranking and MSE/MII preference logic.
+8. Risk & Evidence Agent / Evaluation Writer Agent: Flags low-confidence values, unverified claims, missing proof certificates, scanned PDFs, and synthesizes agent findings into a neutral evaluation summary.
+
+*Dual Execution Mode:
+  - Agentic Mode: Executes full CrewAI 8-agent LLM pipeline with Mistral AI when credentials are present.
+  - Deterministic Fallback Mode: Executes rule-based comparison engine (services/comparison_service.py) when offline or LLM fallback is triggered.
+*Observability: Full agent trace execution and LLM telemetry logged via LangSmith (LANGSMITH_TRACING=true).
+
+
+STEP 5: HUMAN REVIEWER SIGN-OFF & REPORT EXPORT (pages/5_review_export.py & services/export_service.py)
+--------------------------------------------------------------------------------------------------------
+1. Procurement Committee reviews findings on the interactive Streamlit dashboard:
+   - Commercial Price Comparison Matrix (L-1, L-2, L-3 ranking with GST, delivery lead-time, warranty)
+   - Technical Compliance Grid (with click-to-view source evidence citations)
+   - Risk & Clarification Queue (flagged items requiring vendor clarification)
+2. Reviewer Decisions: Committee updates finding-level statuses (pending, approved, rejected, clarification_needed).
+3. Overall Committee Decision: Committee selects official tender decision:
+   - APPROVED_RECOMMENDED_FOR_AWARD
+   - CLARIFICATIONS_REQUESTED
+   - REJECTED_RE_TENDER_REQUIRED
+4. Audit Trail: Action timestamps, reviewer comments, user IDs, and sign-offs are logged into the transactional Audit Database (AuditLogModel & ReviewerActionModel via services/audit_service.py).
+5. Export Service: Generates committee-ready evaluation report packages in 4 formats:
+   - Markdown Report (.md)
+   - Styled Standalone HTML Package (.html)
+   - Structured JSON Data (.json)
+   - Formatted PDF Summary Report (.pdf via ReportLab)
+
+
+4. TRANSACTIONAL DATA MODEL & STORAGE FLOW
+--------------------------------------------------------------------------------
++--------------------------+       +-----------------------------------+       +---------------------------+
+|    Streamlit UI / User   | ----> | Transactional DB (PostgreSQL at   | ----> | Cloud Object Storage      |
+|    (Action Sign-Offs)    |       | localhost:5432 / SQLite Fallback) |       | (Immutable Source Files)  |
++--------------------------+       +-----------------------------------+       +---------------------------+
+             |                                                                               |
+             v                                                                               v
++--------------------------+                                                   +---------------------------+
+| CrewAI / Pydantic Engine | ------------------------------------------------> | ChromaDB Vector Database  |
+| (Structured Extraction)  |                                                   | (Isolated Collections)    |
++--------------------------+                                                   +---------------------------+
+
+
+5. MODEL CONTEXT PROTOCOL (MCP) & INTEGRATION FLOW
+--------------------------------------------------------------------------------
+- Controlled Service Access: External capabilities (email reading, document loading, database queries)
+  are wrapped as explicit tools using MCP (mcp_server.py and mcp_client.py) and function-calling standards.
+- Isolated Tool Boundaries: Agents invoke tools with strict argument validation to query vector stores,
+  inspect proposal metadata, and record audit trails without direct unmonitored system access.
+
+
+6. SYSTEM GUARDRAILS & OPERATIONAL BOUNDARIES
+--------------------------------------------------------------------------------
+1. No Automated Award: System provides evaluation support only; human reviewers make award decisions.
+2. Evidence Traceability: Every material finding includes source filename, page number, and clause ID citations.
+3. Low-Confidence Review Queue: Results with extraction confidence < 0.7 are flagged as review_required.
+4. Corrigenda Trigger: New corrigendum uploads trigger automated re-evaluation of affected tender findings.
+5. Multi-Tenant Collection Isolation: ChromaDB collections are strictly isolated per tender workspace (tender_<id>).
+6. Database Auto-Creation: Connects to PostgreSQL, creates database automatically if missing, or falls back to SQLite smoothly.
+7. Immutable Source Evidence: Uploaded tender and proposal files are preserved without alteration.
+8. OCR Access Boundary: Scanned files are flagged for manual review because OCR is outside this MVP scope.
+
+
+7. SHORT PROJECT EXPLANATION & PROBLEM SOLVED
+--------------------------------------------------------------------------------
+WHAT IS GEM TENDERLENS?
+GeM TenderLens is an AI-powered Multi-Agent Procurement Evaluation & Decision Support System
+specifically designed for government tender procurement workflows (e.g., GeM - Government e-Marketplace).
+
+WHAT PROBLEM DOES IT SOLVE?
+In public and government procurement, evaluating vendor proposals is a complex, slow, and error-prone process:
+
+1. Heterogeneous Vendor Proposals:
+   Vendors submit bids in diverse formats—emails (.eml), PDF quotes, Word documents (.docx), and Excel BOQs.
+   Comparing these manually against hundreds of pages of tender specifications takes weeks.
+
+2. Hidden Non-Compliance & Commercial Traps:
+   Vendors often insert non-compliant terms buried inside fine print (e.g. asking for 20% advance payment when
+   the tender strictly forbids advance payments, or offering 1-year warranty when 3 years is mandatory).
+   Manual evaluation frequently misses these subtle non-compliances, leading to legal disputes or bad contracts.
+
+3. Loss of Evidence Traceability:
+   Traditional evaluation summary spreadsheets lack direct page/clause citations. When audit teams inspect award
+   decisions, verifying why a vendor was qualified or disqualified requires manually searching hundreds of pages.
+
+HOW GEM TENDERLENS SOLVES THIS:
+- Automated Multi-Format Ingestion: Instantly ingests official tender packages, BOQs, corrigenda, and vendor emails/proposals.
+- Dual-Source RAG & Clause Citation: Automatically indexes tender requirements AND vendor proposals into ChromaDB,
+  retrieving exact clause-level citations (Source File, Page Number, Clause ID) for 100% auditable evidence.
+- Multi-Agent AI Evaluation Crew: 8 specialized AI agents analyze technical compliance, normalize commercial quotes
+  (L-1 ranking, GST, delivery SLAs, MSE/MII benefits), and flag risk items.
+- Committee Sign-Off & Audit Trail: Provides interactive committee sign-off dashboards and exports audit-ready evaluation reports (.pdf, .html, .md, .json) for seamless procurement committee approval.
+================================================================================
