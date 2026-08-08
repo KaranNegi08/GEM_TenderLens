@@ -41,7 +41,7 @@ class TenderEvaluationCrew:
         logger.info(f"Initiating full evaluation pipeline for tender '{self.tender_id}' with {len(vendor_dossiers)} vendors.")
 
         # Step 1: Check for valid LLM API key
-        if self.api_key and self.api_key != "your_llm_api_key_here":
+        if self.api_key and self.api_key != "MISTRAL_API_KEY":
             try:
                 # Step 2A: Run multi-agent AI crew
                 logger.info("Executing CrewAI multi-agent workflow with LLM API credentials...")
