@@ -5,9 +5,7 @@ Vendor submission schemas for GeM TenderLens.
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, Field
-from utils_logger import get_logger
 
-logger = get_logger(__name__)
 
 class VendorSubmission(BaseModel):
     """Represents a vendor proposal intake email or dossier submission."""
@@ -19,13 +17,6 @@ class VendorSubmission(BaseModel):
     revision_number: int = Field(default=1, description="Version number of vendor submission")
     attachment_paths: List[str] = Field(default_factory=list, description="List of attached document paths")
 
-    def __init__(self, **data):
-        try:
-            super().__init__(**data)
-            logger.debug(f"Initialized VendorSubmission: {self.vendor_name} ({self.vendor_id})")
-        except Exception as e:
-            logger.error(f"Failed to instantiate VendorSubmission: {e}")
-            raise
 
 class VendorProposal(BaseModel):
     """Structured extraction of vendor pricing, delivery, and compliance details."""
@@ -38,11 +29,3 @@ class VendorProposal(BaseModel):
     technical_claims: List[str] = Field(default_factory=list, description="Summary of key technical compliance claims")
     certificates_submitted: List[str] = Field(default_factory=list, description="List of submitted compliance certificates")
     extraction_confidence: float = Field(default=1.0, description="Confidence score from AI extraction (0.0 to 1.0)")
-
-    def __init__(self, **data):
-        try:
-            super().__init__(**data)
-            logger.debug(f"Initialized VendorProposal: {self.vendor_id} - amount={self.quoted_amount}")
-        except Exception as e:
-            logger.error(f"Failed to instantiate VendorProposal: {e}")
-            raise
