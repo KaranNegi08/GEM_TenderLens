@@ -4,7 +4,7 @@ Maps transactional database tables for audit logging, reviewer sign-offs, and te
 """
 
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Text, Integer, JSON
+from sqlalchemy import Column, String, DateTime, Text, Integer, JSON, Boolean
 from services.database import Base
 
 
@@ -47,3 +47,23 @@ class TenderWorkspaceORM(Base):
 
     def __repr__(self):
         return f"<TenderWorkspaceORM(tender_id='{self.tender_id}', status='{self.status}')>"
+
+
+class TenderRequirementORM(Base):
+    """ORM mapping for dynamically extracted tender requirements."""
+    __tablename__ = "tender_requirements"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    requirement_id = Column(String(128), index=True, nullable=False)
+    tender_id = Column(String(128), index=True, nullable=False)
+    clause_id = Column(String(128), nullable=True)
+    requirement_text = Column(Text, nullable=False)
+    requirement_type = Column(String(64), default="technical")
+    is_mandatory = Column(Boolean, default=True)
+    evidence_required = Column(Text, nullable=True)
+    page_number = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    def __repr__(self):
+        return f"<TenderRequirementORM(requirement_id='{self.requirement_id}', tender_id='{self.tender_id}')>"
+

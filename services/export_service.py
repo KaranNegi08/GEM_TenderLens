@@ -6,12 +6,14 @@ Generates committee-ready evaluation reports in Markdown, HTML, JSON, and PDF fo
 import os
 import json
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+from utils.status_badges import get_status_badge
 from utils_logger import get_logger
 
 logger = get_logger(__name__)
 
 EXPORT_DIR = "./data/exports"
+
 
 class ExportService:
     """Exports structured comparison reports and committee summary packages."""
@@ -26,9 +28,9 @@ class ExportService:
         comparison_matrix: Dict[str, Any],
         reviewer_notes: str = "",
         sign_off_status: str = "PENDING_APPROVAL"
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Any]:
         """
-        Generates markdown, HTML, and JSON report files in `./data/exports`.
+        Generates markdown, HTML, JSON, and PDF report files in `./data/exports`.
         Returns dictionary of generated file paths.
         """
         logger.info(f"Generating committee report export for tender '{tender_id}'")
@@ -39,6 +41,7 @@ class ExportService:
         md_path = os.path.join(self.export_dir, f"{base_filename}.md")
         html_path = os.path.join(self.export_dir, f"{base_filename}.html")
         json_path = os.path.join(self.export_dir, f"{base_filename}.json")
+        pdf_path = os.path.join(self.export_dir, f"{base_filename}.pdf")
 
         try:
             # 1. Generate Markdown content
@@ -61,12 +64,22 @@ class ExportService:
                     "comparison_data": comparison_matrix
                 }, f, indent=2, default=str)
 
-            logger.info(f"Report files exported successfully: {md_path}, {html_path}")
+            # 4. Generate PDF report (Issue #1 fix)
+            pdf_export_path: Optional[str] = None
+            try:
+                self._build_pdf_report(md_content, pdf_path)
+                pdf_export_path = pdf_path
+            except Exception as pdf_err:
+                logger.warning(f"PDF generation failed, continuing with MD/HTML/JSON: {pdf_err}")
+                pdf_export_path = None
+
+            logger.info(f"Report files exported successfully: {md_path}, {html_path}, {pdf_export_path}")
 
             return {
                 "markdown": md_path,
                 "html": html_path,
                 "json": json_path,
+                "pdf": pdf_export_path,
                 "filename": base_filename
             }
 
@@ -85,14 +98,27 @@ class ExportService:
         commercials = matrix.get("commercial_comparison", [])
         findings = matrix.get("compliance_findings", [])
         risks = matrix.get("risk_queue", [])
+
+        # Issue #3 fix: Header L-1 details
         l1_vendor = matrix.get("l1_vendor", "N/A")
+        l1_cost = matrix.get("l1_cost", 0.0)
+        l1_qual_vendor = matrix.get("l1_qualified_vendor", "N/A")
+        l1_qual_cost = matrix.get("l1_qualified_cost", 0.0)
+        l1_deviations = matrix.get("l1_deviations_count", 0)
 
         lines = [
             f"# GeM Tender Evaluation Report",
             f"**Tender Reference ID:** `{tender_id}`",
             f"**Generated On:** `{datetime.now().strftime('%d-%b-%Y %H:%M:%S')}`",
             f"**Committee Sign-Off Status:** `{sign_off_status}`",
-            f"**Recommended L-1 Vendor:** `{l1_vendor}`",
+            f"**Financial L-1 Vendor:** `{l1_vendor}` (Cost: ₹{l1_cost:,.2f})",
+            f"**Technically-Qualified L-1 Vendor:** `{l1_qual_vendor}` (Cost: ₹{l1_qual_cost:,.2f})",
+        ]
+
+        if l1_deviations > 0 or (l1_vendor != l1_qual_vendor and l1_qual_vendor != "N/A"):
+            lines.append(f"⚠️ **Note:** Financial L-1 vendor has {l1_deviations} compliance deviation(s). Review Technical Compliance Matrix before award.")
+
+        lines.extend([
             "",
             "---",
             "",
@@ -104,12 +130,13 @@ class ExportService:
             "",
             "| Rank | Vendor Name | Quoted Price (INR) | Tax / GST (INR) | Total Cost (INR) | Delivery (Days) | MSE Status | L-Status |",
             "|---|---|---|---|---|---|---|---|",
-        ]
+        ])
 
         for c in commercials:
-            tax_str = f"₹{c['tax_amount']:,.2f} (18% GST Added)" if c.get('tax_amount', 0) > 0 else "Included in Base Quote"
+            # Issue #2 fix: Use c['tax_note'] directly instead of duplicating tax_str calculation
+            tax_note = c.get('tax_note', 'N/A')
             lines.append(
-                f"| {c['rank']} | **{c['vendor_name']}** | {c['base_price']:,.2f} | {tax_str} | **{c['total_cost']:,.2f}** | {c['delivery_days']} | {c['mse_status']} | **{c['l_status']}** |"
+                f"| {c['rank']} | **{c['vendor_name']}** | {c['base_price']:,.2f} | {tax_note} | **{c['total_cost']:,.2f}** | {c['delivery_days']} | {c['mse_status']} | **{c['l_status']}** |"
             )
 
         lines.extend([
@@ -120,14 +147,8 @@ class ExportService:
             "|---|---|---|---|---|",
         ])
 
-        STATUS_BADGES = {
-            "compliant": "🟢 COMPLIANT",
-            "review_required": "🟡 REVIEW REQUIRED",
-            "partial": "🔵 PARTIAL / EXEMPTION"
-        }
-
         for f in findings:
-            status_badge = STATUS_BADGES.get(f['status'], "🔴 NON-COMPLIANT")
+            status_badge = get_status_badge(f['status'], upper=True)
             lines.append(
                 f"| **{f['vendor_name']}** | {f['requirement_name']} | {status_badge} | {f['explanation']} | {f['confidence']*100:.0f}% |"
             )
@@ -158,8 +179,14 @@ class ExportService:
 
     def _build_html_report(self, md_content: str, tender_id: str) -> str:
         """Converts Markdown report string to styled standalone HTML document."""
-        import html
-        escaped_content = html.escape(md_content)
+        # Issue #5 fix: Use markdown library for actual HTML parsing & rendering
+        try:
+            import markdown
+            html_body = markdown.markdown(md_content, extensions=['tables', 'fenced_code'])
+        except Exception:
+            import html
+            html_body = f"<pre>{html.escape(md_content)}</pre>"
+
         return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -175,12 +202,124 @@ class ExportService:
         th {{ background-color: #f1f5f9; color: #0f172a; font-weight: 600; }}
         tr:nth-child(even) {{ background-color: #f8fafc; }}
         .badge {{ background: #dbeafe; color: #1e40af; padding: 4px 8px; border-radius: 4px; font-size: 0.9em; }}
-        pre {{ background: #f1f5f9; padding: 15px; border-radius: 6px; white-space: pre-wrap; }}
+        code {{ background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.9em; }}
+        blockquote {{ background: #eff6ff; border-left: 4px solid #2563eb; margin: 0; padding: 12px 16px; border-radius: 4px; }}
     </style>
 </head>
 <body>
     <div class="container">
-        <pre>{escaped_content}</pre>
+        <div class="report-content">
+            {html_body}
+        </div>
     </div>
 </body>
 </html>"""
+
+    def _build_pdf_report(self, md_content: str, pdf_path: str) -> None:
+        """Converts Markdown report string into a styled PDF document using ReportLab."""
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib import colors
+
+        doc = SimpleDocTemplate(
+            pdf_path,
+            pagesize=letter,
+            rightMargin=36,
+            leftMargin=36,
+            topMargin=36,
+            bottomMargin=36
+        )
+
+        styles = getSampleStyleSheet()
+        normal_style = styles["Normal"]
+
+        title_style = ParagraphStyle(
+            'ReportTitle',
+            parent=styles['Heading1'],
+            fontSize=16,
+            leading=20,
+            textColor=colors.HexColor('#0f172a'),
+            spaceAfter=8
+        )
+
+        h2_style = ParagraphStyle(
+            'ReportH2',
+            parent=styles['Heading2'],
+            fontSize=12,
+            leading=15,
+            textColor=colors.HexColor('#1e40af'),
+            spaceBefore=10,
+            spaceAfter=4
+        )
+
+        body_style = ParagraphStyle(
+            'ReportBody',
+            parent=normal_style,
+            fontSize=8.5,
+            leading=11,
+            textColor=colors.HexColor('#1e293b'),
+            spaceAfter=3
+        )
+
+        story = []
+        lines = md_content.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if not line or line == "---":
+                story.append(Spacer(1, 4))
+                i += 1
+                continue
+
+            if line.startswith("# "):
+                title_text = line[2:].strip()
+                story.append(Paragraph(title_text, title_style))
+            elif line.startswith("## "):
+                h2_text = line[3:].strip()
+                story.append(Paragraph(h2_text, h2_style))
+            elif line.startswith("|") and "|" in line[1:]:
+                table_lines = []
+                while i < len(lines) and lines[i].strip().startswith("|"):
+                    tline = lines[i].strip()
+                    if not tline.replace("|", "").replace("-", "").strip() == "":
+                        table_lines.append(tline)
+                    i += 1
+
+                if table_lines:
+                    table_data = []
+                    for tl in table_lines:
+                        cells = [c.strip().replace("**", "") for c in tl.split("|")[1:-1]]
+                        row_cells = [Paragraph(cell, body_style) for cell in cells]
+                        table_data.append(row_cells)
+
+                    if table_data:
+                        t = Table(table_data)
+                        t.setStyle(TableStyle([
+                            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f1f5f9')),
+                            ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#0f172a')),
+                            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+                            ('TOPPADDING', (0, 0), (-1, -1), 3),
+                            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                        ]))
+                        story.append(t)
+                        story.append(Spacer(1, 6))
+                continue
+            else:
+                formatted_line = line
+                while "**" in formatted_line and formatted_line.count("**") >= 2:
+                    formatted_line = formatted_line.replace("**", "<b>", 1)
+                    formatted_line = formatted_line.replace("**", "</b>", 1)
+                while "`" in formatted_line and formatted_line.count("`") >= 2:
+                    formatted_line = formatted_line.replace("`", "<font name='Courier'>", 1)
+                    formatted_line = formatted_line.replace("`", "</font>", 1)
+                # Clean up any leftover single backticks or markdown markers safely
+                formatted_line = formatted_line.replace("`", "")
+                story.append(Paragraph(formatted_line, body_style))
+
+            i += 1
+
+        doc.build(story)
+        logger.info(f"PDF report successfully created at '{pdf_path}'")

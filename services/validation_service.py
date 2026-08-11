@@ -4,7 +4,7 @@ Enforces guardrails: checks scanned PDFs, validates Pydantic schemas, and flags 
 """
 
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from rag.document_loader import DocumentLoader
 from utils_logger import get_logger
 
@@ -14,13 +14,16 @@ class ValidationService:
     """Provides validation and guardrail checks across files and proposal objects."""
 
     @staticmethod
-    def validate_file_accessibility(file_path: str) -> Dict[str, Any]:
+    def validate_file_accessibility(file_path: str, doc_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Inspects file for text accessibility. Flags scanned documents as manual review required.
+        Accepts optional pre-loaded doc_data to avoid duplicate document parsing.
         """
         logger.info(f"Validating text accessibility for file: {file_path}")
         try:
-            doc_data = DocumentLoader.load_document(file_path)
+            if doc_data is None:
+                doc_data = DocumentLoader.load_document(file_path)
+
             is_scanned = doc_data.get("is_scanned", False)
             pages = doc_data.get("pages", [])
 

@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Tuple
 from schemas.evaluation import EvaluationFinding, EvidenceCitation
 from rag.retriever import KnowledgeRetriever
 from utils_logger import get_logger
+from utils.gst_helper import normalize_gst
 
 logger = get_logger(__name__)
 
@@ -100,9 +101,7 @@ class ComparisonService:
             certs = self._get_prop_attr(prop, "certificates_submitted", []) or []
 
             # Pre-tax detection and standard 18% GST normalization
-            is_before_gst = any(term in full_text for term in ["before gst", "excl. gst", "excluding gst", "+18% gst", "+ 18% gst"])
-            if is_before_gst and tax == 0.0 and base_price > 0:
-                tax = round(0.18 * base_price, 2)
+            tax = normalize_gst(full_text, base_price, tax)
 
             total_cost = base_price + tax
             tax_note = f"₹{tax:,.2f} (18% GST Added)" if tax > 0 else "Included in Base Quote"
@@ -132,46 +131,57 @@ class ComparisonService:
         tender_id: str,
         vendor_dossiers: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Maps mandatory tender requirements against vendor evidence."""
-        findings = []
-        is_books_tender = "7798305" in tender_id.lower() or "book" in tender_id.lower()
+        """Maps mandatory tender requirements against vendor evidence dynamically."""
+        from services.tender_service import TenderService
+        from utils.evaluator_helper import evaluate_generic_requirement
 
-        if is_books_tender:
-            standard_requirements = [
-                {"id": "REQ_001", "name": "Item Category: Technical Books Specification", "type": "Technical"},
-                {"id": "REQ_002", "name": "Delivery Period (<= 21 Days to Destination)", "type": "Delivery"},
-                {"id": "REQ_003", "name": "Past Experience Criteria (2 Years / Past Performance)", "type": "Eligibility"},
-                {"id": "REQ_004", "name": "Financial Turnover & Commercial Criteria", "type": "Commercial"},
-                {"id": "REQ_005", "name": "MSE Purchase Preference Eligibility", "type": "Preference"}
-            ]
-        else:
-            standard_requirements = [
-                {"id": "TS-01", "name": "Laptop: Core i5, 8GB RAM, 512GB SSD, 3-Yr Onsite Warranty", "type": "Technical"},
-                {"id": "TS-02", "name": "Laser Printer: Monochrome, Duplex, Wifi/Network, 30ppm", "type": "Technical"},
-                {"id": "TS-03", "name": "UPS 1KVA: Line Interactive, 20 min backup, 2-Yr Warranty", "type": "Technical"},
-                {"id": "TS-04", "name": "Managed Switch: 24-Port Gigabit L2, 48Gbps, 3-Yr Warranty", "type": "Technical"},
-                {"id": "TS-05", "name": "Ergonomic Office Chair: Mesh Back & Adjustable Armrests", "type": "Technical"},
-                {"id": "ELIG-01", "name": "OEM Authorization Certificate Submission", "type": "Eligibility"},
-                {"id": "ELIG-02", "name": "ISO 9001 Quality Certification", "type": "Eligibility"},
-                {"id": "ELIG-03", "name": "Past Performance & Supply Orders", "type": "Eligibility"},
-                {"id": "ELIG-04", "name": "MSE / Udyam Registration & Declarations", "type": "Preference"}
-            ]
+        findings = []
+        stored_requirements = TenderService.get_stored_requirements(tender_id)
+
+        # Fallback Guard: If no requirements are stored in DB for this tender_id, use standard fallback lists
+        if not stored_requirements:
+            is_books_tender = "7798305" in tender_id.lower() or "book" in tender_id.lower()
+            if is_books_tender:
+                stored_requirements = [
+                    {"requirement_id": "REQ_001", "name": "Item Category: Technical Books Specification", "requirement_text": "Item Category: Technical Books Specification", "clause_id": "REQ_001"},
+                    {"requirement_id": "REQ_002", "name": "Delivery Period (<= 21 Days to Destination)", "requirement_text": "Delivery Period (<= 21 Days to Destination)", "clause_id": "REQ_002"},
+                    {"requirement_id": "REQ_003", "name": "Past Experience Criteria (2 Years / Past Performance)", "requirement_text": "Past Experience Criteria (2 Years / Past Performance)", "clause_id": "REQ_003"},
+                    {"requirement_id": "REQ_004", "name": "Financial Turnover & Commercial Criteria", "requirement_text": "Financial Turnover & Commercial Criteria", "clause_id": "REQ_004"},
+                    {"requirement_id": "REQ_005", "name": "MSE Purchase Preference Eligibility", "requirement_text": "MSE Purchase Preference Eligibility", "clause_id": "REQ_005"}
+                ]
+            else:
+                stored_requirements = [
+                    {"requirement_id": "TS-01", "name": "Laptop: Core i5, 8GB RAM, 512GB SSD, 3-Yr Onsite Warranty", "requirement_text": "Laptop: Core i5, 8GB RAM, 512GB SSD, 3-Yr Onsite Warranty", "clause_id": "TS-01"},
+                    {"requirement_id": "TS-02", "name": "Laser Printer: Monochrome, Duplex, Wifi/Network, 30ppm", "requirement_text": "Laser Printer: Monochrome, Duplex, Wifi/Network, 30ppm", "clause_id": "TS-02"},
+                    {"requirement_id": "TS-03", "name": "UPS 1KVA: Line Interactive, 20 min backup, 2-Yr Warranty", "requirement_text": "UPS 1KVA: Line Interactive, 20 min backup, 2-Yr Warranty", "clause_id": "TS-03"},
+                    {"requirement_id": "TS-04", "name": "Managed Switch: 24-Port Gigabit L2, 48Gbps, 3-Yr Warranty", "requirement_text": "Managed Switch: 24-Port Gigabit L2, 48Gbps, 3-Yr Warranty", "clause_id": "TS-04"},
+                    {"requirement_id": "TS-05", "name": "Ergonomic Office Chair: Mesh Back & Adjustable Armrests", "requirement_text": "Ergonomic Office Chair: Mesh Back & Adjustable Armrests", "clause_id": "TS-05"},
+                    {"requirement_id": "ELIG-01", "name": "OEM Authorization Certificate Submission", "requirement_text": "OEM Authorization Certificate Submission", "clause_id": "ELIG-01"},
+                    {"requirement_id": "ELIG-02", "name": "ISO 9001 Quality Certification", "requirement_text": "ISO 9001 Quality Certification", "clause_id": "ELIG-02"},
+                    {"requirement_id": "ELIG-03", "name": "Past Performance & Supply Orders", "requirement_text": "Past Performance & Supply Orders", "clause_id": "ELIG-03"},
+                    {"requirement_id": "ELIG-04", "name": "MSE / Udyam Registration & Declarations", "requirement_text": "MSE / Udyam Registration & Declarations", "clause_id": "ELIG-04"}
+                ]
 
         for dossier in vendor_dossiers:
             v_id, v_name, prop, full_text = self._extract_dossier_info(dossier)
 
-            for req in standard_requirements:
-                r_id, req_name = req["id"], req["name"]
+            for req in stored_requirements:
+                r_id = req.get("requirement_id") or req.get("id") or "REQ_GENERIC"
+                req_name = req.get("name") or req.get("requirement_name") or req.get("requirement_text", "")[:80]
+                clause_id = req.get("clause_id") or r_id
 
-                if is_books_tender:
+                is_books_tender = "7798305" in tender_id.lower() or "book" in tender_id.lower()
+                if r_id in ["REQ_001", "REQ_002", "REQ_003", "REQ_004", "REQ_005"] and is_books_tender:
                     status, explanation, confidence = self._evaluate_books_req(r_id, full_text, prop)
-                else:
+                elif r_id in ["TS-01", "TS-02", "TS-03", "TS-04", "TS-05", "ELIG-01", "ELIG-02", "ELIG-03", "ELIG-04"] and not is_books_tender:
                     status, explanation, confidence = self._evaluate_hardware_req(r_id, full_text)
+                else:
+                    status, explanation, confidence = evaluate_generic_requirement(req, full_text, prop)
 
                 tender_cit = EvidenceCitation(
                     source_file=f"GeM_Bid_{tender_id}.pdf",
-                    page_number=1,
-                    clause_id=r_id,
+                    page_number=req.get("page_number") or 1,
+                    clause_id=clause_id,
                     excerpt=f"Mandatory Requirement: {req_name}"
                 )
 

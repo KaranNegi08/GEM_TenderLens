@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 # Primary database URL from environment
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://postgres:Kunnu123@localhost:5432/tenderlens_db"
+    "sqlite:///./data/tenderlens_fallback.db"
 )
 FALLBACK_SQLITE_URL = "sqlite:///./data/tenderlens_fallback.db"
 

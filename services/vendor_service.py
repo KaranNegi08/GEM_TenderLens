@@ -5,6 +5,7 @@ Manages vendor submission dossiers, email intake, and proposal data extraction.
 
 import os
 import re
+import hashlib
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from schemas.vendor import VendorSubmission, VendorProposal
@@ -12,11 +13,19 @@ from rag.document_loader import DocumentLoader
 from rag.chunking import DocumentChunker
 from rag.chroma_client import ChromaDBClientManager
 from rag.embeddings import VectorEmbeddingProvider
+from services.validation_service import ValidationService
 from utils_logger import get_logger
+from utils.gst_helper import normalize_gst
 
 logger = get_logger(__name__)
 
-from langsmith import traceable
+try:
+    from langsmith import traceable
+except ImportError:
+    def traceable(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 VENDOR_STORAGE_DIR = "./data/uploads/vendor_submissions"
 
@@ -39,7 +48,9 @@ class VendorService:
         email_subject: Optional[str] = None
     ) -> Dict[str, Any]:
         """Ingests vendor proposal files, extracts structured fields, and indexes chunks into ChromaDB."""
-        vendor_id = f"VEND_{re.sub(r'[^a-zA-Z0-9]', '', vendor_name).upper()[:10]}"
+        name_clean = re.sub(r'[^a-zA-Z0-9]', '', vendor_name).upper()[:10]
+        name_hash = hashlib.md5(vendor_name.encode()).hexdigest()[:4].upper()
+        vendor_id = f"VEND_{name_clean}_{name_hash}"
         logger.info(f"Processing vendor submission: '{vendor_name}' ({vendor_id}) for tender '{tender_id}'")
 
         try:
@@ -61,7 +72,8 @@ class VendorService:
             for fp in file_paths:
                 doc_data = DocumentLoader.load_document(fp)
                 loaded_docs.append((fp, doc_data))
-                if doc_data.get("is_scanned"):
+                val_res = ValidationService.validate_file_accessibility(fp, doc_data=doc_data)
+                if val_res.get("is_scanned"):
                     scanned_flags.append(os.path.basename(fp))
                 for page in doc_data.get("pages", []):
                     combined_text.append(page.get("content", ""))
@@ -102,6 +114,27 @@ class VendorService:
 
             proposal = self._extract_proposal_fields(vendor_id, full_proposal_text)
 
+            # Audit Log: Record vendor intake event
+            try:
+                from services.audit_service import DatabaseAuditService
+                from schemas.audit import AuditLog
+                import uuid
+
+                audit_log = AuditLog(
+                    log_id=f"AUDIT_{uuid.uuid4().hex[:12].upper()}",
+                    actor="VendorService",
+                    action_type="VENDOR_INTAKE",
+                    details={
+                        "vendor_name": vendor_name,
+                        "vendor_id": vendor_id,
+                        "tender_id": tender_id,
+                        "scanned_files_count": len(scanned_flags)
+                    }
+                )
+                DatabaseAuditService.save_audit_log(audit_log)
+            except Exception as audit_err:
+                logger.warning(f"Could not save audit log for vendor submission '{vendor_name}': {audit_err}")
+
             return {
                 "success": True,
                 "submission": submission,
@@ -116,110 +149,6 @@ class VendorService:
             return {"success": False, "error": str(e)}
 
     def _extract_proposal_fields(self, vendor_id: str, text: str) -> VendorProposal:
-        """Extracts numerical & technical values from text using regex and heuristics."""
-        logger.info(f"Extracting proposal fields for vendor '{vendor_id}'")
-
-        # Exclude lines mentioning past orders/experience
-        clean_lines = [
-            line for line in text.splitlines()
-            if not any(past in line.lower() for past in ['past supply', 'prior supply', 'supply order', 'po no', 'past order', 'completion certificate'])
-        ]
-        clean_text = '\n'.join(clean_lines)
-        text_lower = text.lower()
-
-        # 1. Price extraction
-        quoted_amount = None
-        total_patterns = [
-            r'(?:grand\s+total|total\s+amount|quoted\s+amount|final\s+bid)(?:[^\n\d]*)(?:rs\.?|inr|\u20b9)?\s*([0-9,]+(?:\.[0-9]{2})?)',
-            r'(?:total|cost)[^\n\d]*(?:rs\.?|inr|\u20b9)?\s*([0-9,]{6,}(?:\.[0-9]{2})?)',
-            r'(?:rs\.?|inr|\u20b9)\s*([0-9,]{6,}(?:\.[0-9]{2})?)'
-        ]
-
-        for pat in total_patterns:
-            matches = re.findall(pat, clean_text, re.IGNORECASE)
-            for m in matches:
-                try:
-                    val = float(m.replace(',', ''))
-                    if val > 1000:
-                        quoted_amount = val
-                        break
-                except ValueError:
-                    pass
-            if quoted_amount:
-                break
-
-        # 2. Tax & GST extraction
-        is_before_gst = any(term in text_lower for term in ["before gst", "excl. gst", "excluding gst", "+18% gst", "+ 18% gst", "excl gst", "grand total before gst"])
-        is_incl_gst = any(term in text_lower for term in ["incl. gst", "inclusive of gst", "incl gst", "total incl. gst", "total (incl. gst)"])
-
-        tax_amount = 0.0
-        if is_before_gst and quoted_amount:
-            tax_amount = round(0.18 * quoted_amount, 2)
-        elif not is_incl_gst and quoted_amount:
-            tax_matches = re.findall(r'(?:gst|tax|vat)[:\s]*INR\s*([0-9,]+(?:\.[0-9]{2})?)|(?:gst|tax)[:\s]*([0-9]+)%', text, re.IGNORECASE)
-            if tax_matches:
-                flat_tax = [t for tup in tax_matches for t in tup if t]
-                if flat_tax:
-                    try:
-                        tax_val = float(flat_tax[0].replace(",", ""))
-                        tax_amount = round((tax_val / 100.0) * quoted_amount, 2) if tax_val < 100 else tax_val
-                    except ValueError:
-                        tax_amount = 0.0
-
-        # 3. Delivery days
-        delivery_days = 21
-        deliv_patterns = [
-            r'(?:delivery\s+(?:timeline|period|lead\s+time)?|deliver)[:\s]*(\d+)\s*(?:days|working days|calendar days)',
-            r'(\d+)\s*days\s+(?:for\s+all\s+items|to|delivery)'
-        ]
-        for dpat in deliv_patterns:
-            dmatches = re.findall(dpat, text, re.IGNORECASE)
-            if dmatches:
-                try:
-                    delivery_days = int(dmatches[0])
-                    break
-                except ValueError:
-                    pass
-
-        # 4. Warranty months
-        warranty_matches = re.findall(r'(\d+)\s*(?:months|month|years|year)\s*warranty', text, re.IGNORECASE)
-        warranty_months = 12
-        if warranty_matches:
-            try:
-                val = int(warranty_matches[0])
-                warranty_months = val * 12 if "year" in text_lower else val
-            except ValueError:
-                warranty_months = 12
-
-        # 5. Technical claims & certificates
-        claims = []
-        if any(term in text_lower for term in ["make", "publisher", "brand", "model"]):
-            claims.append("Exact make/model and technical details provided.")
-        if any(term in text_lower for term in ["spec", "compliant", "compliance"]):
-            claims.append("Fully compliant with tender technical specifications.")
-        if "delivery" in text_lower or "consignee" in text_lower:
-            claims.append(f"Offered delivery schedule of {delivery_days} days.")
-
-        certs = []
-        cert_map = [
-            (["udyam", "mse"], "MSE / Udyam Registration Certificate"),
-            (["gst", "tax"], "GST Registration Certificate"),
-            (["oem", "authorization"], "OEM Authorization Certificate"),
-            (["iso", "9001"], "ISO 9001 Quality Certificate"),
-            (["non-blacklisting", "blacklisting"], "Self-Declaration of Non-Blacklisting")
-        ]
-        for terms, cert_name in cert_map:
-            if any(term in text_lower for term in terms):
-                certs.append(cert_name)
-
-        return VendorProposal(
-            vendor_id=vendor_id,
-            quoted_amount=quoted_amount,
-            currency="INR",
-            tax_amount=tax_amount,
-            delivery_days=delivery_days,
-            warranty_months=warranty_months,
-            technical_claims=claims,
-            certificates_submitted=certs,
-            extraction_confidence=0.95 if quoted_amount else 0.60
-        )
+        """Extracts numerical & technical values from text using consolidated proposal_extractor utility."""
+        from utils.proposal_extractor import extract_proposal_fields_from_text
+        return extract_proposal_fields_from_text(vendor_id, text)

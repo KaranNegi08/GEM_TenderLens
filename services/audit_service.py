@@ -76,3 +76,30 @@ class DatabaseAuditService:
         except Exception as e:
             logger.error(f"Failed to fetch audit logs: {e}")
             return []
+
+    @staticmethod
+    def get_reviewer_actions(finding_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+        """Retrieves reviewer actions, optionally filtered by finding_id."""
+        try:
+            with get_db_session() as session:
+                query = session.query(ReviewerActionORM)
+                if finding_id:
+                    query = query.filter(ReviewerActionORM.finding_id == finding_id)
+                entries = (
+                    query.order_by(ReviewerActionORM.timestamp.desc())
+                    .limit(limit)
+                    .all()
+                )
+                return [
+                    {
+                        "id": item.id,
+                        "finding_id": item.finding_id,
+                        "action": item.action,
+                        "reviewer_comments": item.reviewer_comments or "",
+                        "timestamp": item.timestamp.isoformat() if item.timestamp else None,
+                    }
+                    for item in entries
+                ]
+        except Exception as e:
+            logger.error(f"Failed to fetch reviewer actions: {e}")
+            return []

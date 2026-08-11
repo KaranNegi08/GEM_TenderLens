@@ -10,6 +10,7 @@ from rag.document_loader import DocumentLoader
 from rag.chunking import DocumentChunker
 from rag.chroma_client import ChromaDBClientManager
 from rag.embeddings import VectorEmbeddingProvider
+from services.validation_service import ValidationService
 from utils_logger import get_logger
 
 logger = get_logger(__name__)
@@ -105,6 +106,27 @@ class TenderService:
         except Exception as v_err:
             logger.warning(f"Could not auto-re-index vendor submissions for tender '{tender_id}': {v_err}")
 
+        # Audit Log: Record tender package processing event
+        try:
+            from services.audit_service import DatabaseAuditService
+            from schemas.audit import AuditLog
+            import uuid
+
+            audit_log = AuditLog(
+                log_id=f"AUDIT_{uuid.uuid4().hex[:12].upper()}",
+                actor="TenderService",
+                action_type="TENDER_UPLOAD",
+                details={
+                    "tender_id": tender_id,
+                    "total_files": len(file_paths),
+                    "indexed_files": len(indexed_files),
+                    "total_chunks": total_chunks
+                }
+            )
+            DatabaseAuditService.save_audit_log(audit_log)
+        except Exception as audit_err:
+            logger.warning(f"Could not save audit log for tender package '{tender_id}': {audit_err}")
+
         return {
             "success": len(indexed_files) > 0,
             "tender_id": tender_id,
@@ -130,6 +152,8 @@ class TenderService:
             if doc_data.get("error"):
                 logger.error(f"Failed to load document {filename}: {doc_data['error']}")
                 return {"success": False, "error": doc_data["error"]}
+
+            val_res = ValidationService.validate_file_accessibility(file_path, doc_data=doc_data)
 
             clean_tender_id = tender_id.replace("/", "_")
             doc_id = f"DOC_{clean_tender_id}_{document_type}_{document_version}"
@@ -175,6 +199,30 @@ class TenderService:
                 logger.info(f"Successfully indexed {len(chunks)} chunks into ChromaDB for tender '{tender_id}'")
 
             requirements = self._extract_requirements_from_chunks(chunks, tender_id)
+            if requirements:
+                self.save_requirements_to_db(tender_id, requirements)
+
+            # Audit Log persistence
+            try:
+                from services.audit_service import DatabaseAuditService
+                from schemas.audit import AuditLog
+                import uuid
+
+                audit_log = AuditLog(
+                    log_id=f"AUDIT_{uuid.uuid4().hex[:12].upper()}",
+                    actor="TenderService",
+                    action_type="TENDER_UPLOAD",
+                    details={
+                        "tender_id": tender_id,
+                        "source_file": filename,
+                        "document_type": document_type,
+                        "chunks_indexed": len(chunks),
+                        "requirements_found": len(requirements)
+                    }
+                )
+                DatabaseAuditService.save_audit_log(audit_log)
+            except Exception as audit_err:
+                logger.warning(f"Could not save audit log for tender file '{filename}': {audit_err}")
 
             return {
                 "success": True,
@@ -182,7 +230,8 @@ class TenderService:
                 "chunks_indexed": len(chunks),
                 "requirements_found": len(requirements),
                 "requirements": requirements,
-                "is_scanned": doc_data.get("is_scanned", False)
+                "is_scanned": val_res.get("is_scanned", False),
+                "scanned_pages": val_res.get("scanned_pages", [])
             }
 
         except Exception as e:
@@ -210,3 +259,60 @@ class TenderService:
                 req_counter += 1
 
         return requirements
+
+    @staticmethod
+    def save_requirements_to_db(tender_id: str, requirements: List[TenderRequirement]) -> bool:
+        """Persists extracted TenderRequirement objects into DB."""
+        try:
+            from services.database import get_db_session, init_db
+            from services.db_models import TenderRequirementORM
+            init_db()
+
+            with get_db_session() as session:
+                session.query(TenderRequirementORM).filter(TenderRequirementORM.tender_id == tender_id).delete()
+                orm_records = [
+                    TenderRequirementORM(
+                        requirement_id=r.requirement_id,
+                        tender_id=r.tender_id,
+                        clause_id=r.clause_id,
+                        requirement_text=r.requirement_text,
+                        requirement_type=r.requirement_type,
+                        is_mandatory=r.is_mandatory,
+                        evidence_required=r.evidence_required,
+                        page_number=r.page_number
+                    )
+                    for r in requirements
+                ]
+                session.add_all(orm_records)
+                logger.info(f"Persisted {len(orm_records)} TenderRequirements into DB for tender '{tender_id}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to persist requirements to DB for tender '{tender_id}': {e}")
+            return False
+
+    @staticmethod
+    def get_stored_requirements(tender_id: str) -> List[Dict[str, Any]]:
+        """Fetches stored TenderRequirement records from DB for a given tender_id."""
+        try:
+            from services.database import get_db_session
+            from services.db_models import TenderRequirementORM
+
+            with get_db_session() as session:
+                records = session.query(TenderRequirementORM).filter(TenderRequirementORM.tender_id == tender_id).all()
+                return [
+                    {
+                        "requirement_id": r.requirement_id,
+                        "tender_id": r.tender_id,
+                        "clause_id": r.clause_id or "GEN_CLAUSE",
+                        "requirement_text": r.requirement_text,
+                        "requirement_type": r.requirement_type,
+                        "is_mandatory": r.is_mandatory,
+                        "evidence_required": r.evidence_required,
+                        "page_number": r.page_number or 1
+                    }
+                    for r in records
+                ]
+        except Exception as e:
+            logger.error(f"Error fetching stored requirements from DB for '{tender_id}': {e}")
+            return []
+
