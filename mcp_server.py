@@ -11,6 +11,7 @@ from rag.retriever import KnowledgeRetriever
 from rag.document_loader import DocumentLoader
 from services.vendor_service import VendorService
 from services.tender_service import TenderService
+from utils.proposal_extractor import extract_proposal_fields_from_text
 from utils_logger import get_logger
 
 logger = get_logger(__name__)
@@ -99,7 +100,7 @@ class MCPServer:
 
             elif name == "extract_proposal":
                 text_content = arguments.get("text_content", "")
-                proposal = self.vendor_service._extract_proposal_fields("MCP_VENDOR", text_content)
+                proposal = extract_proposal_fields_from_text("MCP_VENDOR", text_content)
                 return {
                     "success": True,
                     "tool": name,
