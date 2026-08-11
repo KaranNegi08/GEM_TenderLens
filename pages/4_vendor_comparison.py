@@ -5,6 +5,7 @@ Executes CrewAI multi-agent workflow to produce technical compliance matrix, com
 
 import streamlit as st
 from crew.tender_crew import TenderEvaluationCrew
+from utils.status_badges import get_status_badge
 from utils_logger import get_logger
 
 logger = get_logger(__name__)
@@ -20,18 +21,8 @@ tender_service = TenderService()
 available_tenders = tender_service.list_available_tenders()
 
 # Standardized session state initialization
-if "active_tender_id" not in st.session_state:
-    st.session_state.active_tender_id = available_tenders[0] if available_tenders else "GEM_9146015"
-if "indexed_files" not in st.session_state:
-    st.session_state.indexed_files = []
-if "vendor_dossiers" not in st.session_state:
-    st.session_state.vendor_dossiers = []
-if "comparison_result" not in st.session_state:
-    st.session_state.comparison_result = None
-if "export_files" not in st.session_state:
-    st.session_state.export_files = None
-if "tender_indexed" not in st.session_state:
-    st.session_state.tender_indexed = False
+from utils.session_state import init_session_state
+init_session_state(available_tenders)
 
 # Sidebar Navigation
 with st.sidebar:
@@ -53,7 +44,7 @@ if st.button("🚀 Run Multi-Agent Comparison Crew", type="primary"):
         with st.spinner("CrewAI agents analyzing technical, commercial, and risk factors..."):
             try:
                 crew_runner = TenderEvaluationCrew(st.session_state.active_tender_id)
-                doc_list = st.session_state.get("indexed_files", ["GeM_Bid_GEM_2026_B_7798305.txt"])
+                doc_list = st.session_state.get("indexed_files", [])
                 res = crew_runner.run_full_evaluation(doc_list, st.session_state.vendor_dossiers)
                 st.session_state.comparison_result = res
                 st.success("Multi-agent comparison completed successfully!")
@@ -106,14 +97,7 @@ if st.session_state.get("comparison_result"):
             if filter_vendor != "All Bidders" and f["vendor_name"] != filter_vendor:
                 continue
 
-            if f["status"] == "compliant":
-                status_icon = "🟢 Compliant"
-            elif f["status"] == "review_required":
-                status_icon = "🟡 Review Required"
-            elif f["status"] == "partial":
-                status_icon = "🔵 Partial / Exemption"
-            else:
-                status_icon = "🔴 Non-Compliant"
+            status_icon = get_status_badge(f["status"])
 
             trows.append({
                 "Vendor": f["vendor_name"],
@@ -122,5 +106,22 @@ if st.session_state.get("comparison_result"):
                 "Rationale & Source Evidence": f["explanation"]
             })
         st.dataframe(trows, use_container_width=True)
+
+    st.subheader("3. Risk & Clarification Queue")
+    risk_queue = res.get("risk_queue", [])
+    if risk_queue:
+        risk_rows = []
+        for r in risk_queue:
+            risk_rows.append({
+                "Vendor": r.get("vendor_name", "N/A"),
+                "Issue Type": r.get("issue_type", "N/A"),
+                "Description": r.get("description", ""),
+                "Confidence": f"{r.get('confidence', 0)*100:.0f}%",
+                "Suggested Action": r.get("suggested_action", "")
+            })
+        st.dataframe(risk_rows, use_container_width=True)
+        st.caption(f"⚠️ {len(risk_queue)} item(s) flagged for committee review before final award decision.")
+    else:
+        st.success("✅ No material risks or missing documentation flagged across all vendor submissions.")
 else:
     st.info("Click 'Run Multi-Agent Comparison Crew' above to execute the evaluation workflow.")

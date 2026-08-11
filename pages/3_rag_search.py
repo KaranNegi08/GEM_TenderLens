@@ -26,18 +26,8 @@ tender_service = TenderService()
 available_tenders = tender_service.list_available_tenders()
 
 # Standardized session state initialization
-if "active_tender_id" not in st.session_state:
-    st.session_state.active_tender_id = available_tenders[0] if available_tenders else "GEM_9146015"
-if "indexed_files" not in st.session_state:
-    st.session_state.indexed_files = []
-if "vendor_dossiers" not in st.session_state:
-    st.session_state.vendor_dossiers = []
-if "comparison_result" not in st.session_state:
-    st.session_state.comparison_result = None
-if "export_files" not in st.session_state:
-    st.session_state.export_files = None
-if "tender_indexed" not in st.session_state:
-    st.session_state.tender_indexed = False
+from utils.session_state import init_session_state
+init_session_state(available_tenders)
 
 # Sidebar Navigation
 with st.sidebar:
@@ -74,6 +64,27 @@ if st.button("🔎 Execute RAG Search", type="primary"):
                 results = synthesis_response.get("results", [])
                 synthesized_ans = synthesis_response.get("synthesized_answer", "")
 
+                # Audit Log persistence for RAG Search
+                try:
+                    from services.audit_service import DatabaseAuditService
+                    from schemas.audit import AuditLog
+                    import uuid
+
+                    audit_log = AuditLog(
+                        log_id=f"AUDIT_{uuid.uuid4().hex[:12].upper()}",
+                        actor="User",
+                        action_type="RAG_SEARCH",
+                        details={
+                            "tender_id": st.session_state.active_tender_id,
+                            "query": query_text,
+                            "results_count": len(results),
+                            "has_synthesized_answer": bool(synthesized_ans)
+                        }
+                    )
+                    DatabaseAuditService.save_audit_log(audit_log)
+                except Exception as audit_err:
+                    logger.warning(f"Could not save RAG search audit log: {audit_err}")
+
                 if synthesized_ans:
                     st.markdown("### 💡 Synthesized Direct Answer")
                     if synthesized_ans.startswith("⚠️"):
@@ -86,10 +97,12 @@ if st.button("🔎 Execute RAG Search", type="primary"):
                     st.markdown(f"### 📄 Source Clause Citations ({len(results)})")
                     for idx, res in enumerate(results, 1):
                         meta = res.get("metadata", {})
+                        # DocumentLoader centrally cleans text for all formats during ingestion.
+                        # Kept here as an extra safety-net for UI rendering.
                         clean_text = DocumentLoader.clean_english_text(res.get("text", ""))
                         snippet_text = DocumentLoader.clean_english_text(res.get("snippet", ""))
                         clause_tag = meta.get("clause_id") or f"Page {meta.get('page_number')}"
-                        distance_score = round(res.get("distance", 0.0), 3)
+                        relevance_pct = round(max(0.0, min(100.0, (1.0 - res.get("distance", 0.0)) * 100.0)), 1)
 
                         with st.container(border=True):
                             col_a, col_b = st.columns([3, 1])
@@ -97,7 +110,7 @@ if st.button("🔎 Execute RAG Search", type="primary"):
                                 st.markdown(f"#### Citation #{idx}: `{clause_tag}`")
                                 st.write(f"📄 **Source File:** `{meta.get('source_file')}` | **Page:** `{meta.get('page_number')}` | **Clause ID:** `{clause_tag}`")
                             with col_b:
-                                st.metric(label="Distance Score", value=distance_score)
+                                st.metric(label="Relevance", value=f"{relevance_pct}%")
 
                             st.info(f"**Key Matching Excerpt:**\n{snippet_text if snippet_text else clean_text[:250]}")
                             with st.expander("📖 Show Full Clause Chunk Text"):

@@ -21,18 +21,8 @@ tender_service = TenderService()
 available_tenders = tender_service.list_available_tenders()
 
 # Standardized session state initialization
-if "active_tender_id" not in st.session_state:
-    st.session_state.active_tender_id = available_tenders[0] if available_tenders else "GEM_9146015"
-if "indexed_files" not in st.session_state:
-    st.session_state.indexed_files = []
-if "vendor_dossiers" not in st.session_state:
-    st.session_state.vendor_dossiers = []
-if "comparison_result" not in st.session_state:
-    st.session_state.comparison_result = None
-if "export_files" not in st.session_state:
-    st.session_state.export_files = None
-if "tender_indexed" not in st.session_state:
-    st.session_state.tender_indexed = False
+from utils.session_state import init_session_state
+init_session_state(available_tenders)
 
 # Sidebar Navigation
 with st.sidebar:
@@ -52,15 +42,23 @@ with col_left:
     st.subheader("1. Active Tender Setup")
     
     if available_tenders:
-        selected_tender_folder = st.selectbox(
-            "Select Available Tender Package Folder:",
-            options=available_tenders + ["➕ Enter Custom Tender ID"],
-            index=available_tenders.index(st.session_state.active_tender_id) if st.session_state.active_tender_id in available_tenders else 0
+        default_mode_idx = 0 if st.session_state.active_tender_id in available_tenders else 1
+        tender_source = st.radio(
+            "Tender Setup Mode:",
+            options=["📁 Select Existing Package", "➕ Enter Custom Tender ID"],
+            index=default_mode_idx,
+            horizontal=True
         )
-        if selected_tender_folder == "➕ Enter Custom Tender ID":
-            tender_id_input = st.text_input("Custom GeM Tender Reference ID:", value=st.session_state.active_tender_id)
-        else:
+        if tender_source == "📁 Select Existing Package":
+            selected_tender_folder = st.selectbox(
+                "Select Available Tender Package Folder:",
+                options=available_tenders,
+                index=available_tenders.index(st.session_state.active_tender_id) if st.session_state.active_tender_id in available_tenders else 0
+            )
             tender_id_input = selected_tender_folder
+        else:
+            default_custom_val = st.session_state.active_tender_id if st.session_state.active_tender_id not in available_tenders else ""
+            tender_id_input = st.text_input("Custom GeM Tender Reference ID:", value=default_custom_val)
     else:
         tender_id_input = st.text_input("GeM Tender Reference ID:", value=st.session_state.active_tender_id)
     
@@ -103,9 +101,11 @@ with col_right:
     )
     
     doc_type_selected = st.selectbox(
-        "Document Type Category:",
-        ["bid_document", "technical_spec", "boq", "corrigendum"]
+        "Document Type Category (Fallback):",
+        ["bid_document", "technical_spec", "boq", "corrigendum"],
+        help="Filename se type automatically detect hoga (jaise 'boq' ya 'spec' filename mein ho); ye dropdown sirf tab use hoga jab detect na ho paye."
     )
+    st.caption("ℹ️ Filename se type automatically detect hoga (jaise 'boq' ya 'spec' filename mein ho); ye dropdown sirf tab use hoga jab detect na ho paye.")
 
     if uploaded_files:
         if st.button("Process & Index Uploaded Documents"):
@@ -121,16 +121,19 @@ with col_right:
                         with open(save_path, "wb") as f:
                             f.write(up_file.getbuffer())
                         
+                        inferred_type = tender_service.infer_document_type(up_file.name)
+                        final_doc_type = inferred_type if inferred_type != "bid_document" else doc_type_selected
+
                         res = tender_service.process_tender_file(
                             file_path=save_path,
                             tender_id=tender_id_input,
-                            document_type=doc_type_selected
+                            document_type=final_doc_type
                         )
                         if res.get("success"):
                             if save_path not in st.session_state.indexed_files:
                                 st.session_state.indexed_files.append(save_path)
                             st.session_state.tender_indexed = True
-                            st.success(f"Successfully indexed `{up_file.name}` ({res.get('chunks_indexed')} chunks)")
+                            st.success(f"Successfully indexed `{up_file.name}` ({res.get('chunks_indexed')} chunks) as `{final_doc_type}`")
                         else:
                             st.error(f"Failed to process `{up_file.name}`: {res.get('error')}")
                 except Exception as e:

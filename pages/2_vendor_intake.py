@@ -5,6 +5,7 @@ Handles vendor submission ingestion, proposal email parsing, file dossier creati
 
 import streamlit as st
 import os
+from datetime import datetime
 from services.vendor_service import VendorService
 from utils_logger import get_logger
 
@@ -22,18 +23,8 @@ tender_service = TenderService()
 available_tenders = tender_service.list_available_tenders()
 
 # Standardized session state initialization
-if "active_tender_id" not in st.session_state:
-    st.session_state.active_tender_id = available_tenders[0] if available_tenders else "GEM_9146015"
-if "indexed_files" not in st.session_state:
-    st.session_state.indexed_files = []
-if "vendor_dossiers" not in st.session_state:
-    st.session_state.vendor_dossiers = []
-if "comparison_result" not in st.session_state:
-    st.session_state.comparison_result = None
-if "export_files" not in st.session_state:
-    st.session_state.export_files = None
-if "tender_indexed" not in st.session_state:
-    st.session_state.tender_indexed = False
+from utils.session_state import init_session_state
+init_session_state(available_tenders)
 
 # Sidebar Navigation
 with st.sidebar:
@@ -54,7 +45,7 @@ with col_a:
     v_name_input = st.text_input("Vendor Company Name:", placeholder="e.g. Acme Supplies Ltd")
     v_files_uploaded = st.file_uploader(
         "Upload Proposal/PDF/EML Files:",
-        type=["pdf", "docx", "eml", "txt", "xlsx"],
+        type=["pdf", "docx", "eml", "txt", "xlsx", "xls"],
         accept_multiple_files=True
     )
     
@@ -65,19 +56,34 @@ with col_a:
             logger.info(f"Processing submission for vendor '{v_name_input}'")
             with st.spinner("Processing vendor submission..."):
                 try:
+                    # Check if vendor already has an existing dossier in this session
+                    existing_dossier_idx = next(
+                        (i for i, d in enumerate(st.session_state.vendor_dossiers) 
+                         if d and d.get("submission") and getattr(d["submission"], "vendor_name", "").lower().strip() == v_name_input.lower().strip()),
+                        None
+                    )
+
+                    if existing_dossier_idx is not None:
+                        st.info(f"ℹ️ '{v_name_input}' already has a submission. This will be added as a new revision and will REPLACE the previous entry in the comparison.")
+
                     saved_paths = []
                     v_dir = os.path.join("./data/uploads/vendor_submissions", v_name_input.replace(" ", "_"))
                     os.makedirs(v_dir, exist_ok=True)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     for uf in v_files_uploaded:
-                        sp = os.path.join(v_dir, uf.name)
+                        sp = os.path.join(v_dir, f"{timestamp}_{uf.name}")
                         with open(sp, "wb") as f:
                             f.write(uf.getbuffer())
                         saved_paths.append(sp)
                     
                     res = vendor_service.process_vendor_submission(v_name_input, st.session_state.active_tender_id, saved_paths)
                     if res.get("success"):
-                        st.session_state.vendor_dossiers.append(res)
-                        st.success(f"Dossier created for `{v_name_input}`!")
+                        if existing_dossier_idx is not None:
+                            st.session_state.vendor_dossiers[existing_dossier_idx] = res
+                            st.success(f"Updated existing dossier for `{v_name_input}` (new revision).")
+                        else:
+                            st.session_state.vendor_dossiers.append(res)
+                            st.success(f"Dossier created for `{v_name_input}`!")
                 except Exception as e:
                     logger.exception(f"Error creating vendor dossier: {e}")
                     st.error(f"Failed to upload submission: {str(e)}")
