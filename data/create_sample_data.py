@@ -12,6 +12,11 @@ VENDOR_DIR = "./data/uploads/vendor_submissions"
 os.makedirs(TENDER_DIR, exist_ok=True)
 os.makedirs(VENDOR_DIR, exist_ok=True)
 
+# Package folder for GEM_9146015 (used in package discovery tests)
+PKG_DIR = os.path.join(TENDER_DIR, "GEM_9146015")
+os.makedirs(PKG_DIR, exist_ok=True)
+
+
 # 1. Main GeM Bid Document (GEM/2026/B/7798305)
 GEM_BID_TEXT = """GeM Bid Document
 Bid Number: GEM/2026/B/7798305
@@ -98,6 +103,13 @@ BOQ_CSV_TEXT = """Ser_No,Nomenclature,Unit,Quantity,Estimated_Price_INR
 
 with open(os.path.join(TENDER_DIR, "BOQ_Details.csv"), "w", encoding="utf-8") as f:
     f.write(BOQ_CSV_TEXT)
+
+# Also save package files in PKG_DIR for GEM_9146015
+with open(os.path.join(PKG_DIR, "GeM_Bid_GEM_9146015.txt"), "w", encoding="utf-8") as f:
+    f.write(GEM_BID_TEXT)
+with open(os.path.join(PKG_DIR, "Technical_Specifications.txt"), "w", encoding="utf-8") as f:
+    f.write(TECH_SPEC_TEXT)
+
 
 
 # 4. Vendor Proposal Submissions
