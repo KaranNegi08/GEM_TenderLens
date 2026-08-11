@@ -4,7 +4,7 @@ Defines all 8 specialized procurement agents with roles, goals, and backstories.
 """
 
 import os
-from typing import Optional, Any
+from typing import Optional, Any, List
 from crewai import Agent, LLM
 from utils_logger import get_logger
 
@@ -33,7 +33,7 @@ def get_crew_llm(
     else:
         return None
 
-    if not chosen_key or chosen_key == "MISTRAL_API_KEY":
+    if not chosen_key or chosen_key == "your_llm_api_key_here":
         logger.warning("No valid LLM API key provided for CrewAI LLM initialization.")
         return None
 
@@ -75,7 +75,16 @@ class TenderAgents:
         self.api_key = llm_api_key or os.getenv("MISTRAL_API_KEY") or os.getenv("GROQ_API_KEY") or os.getenv("LLM_API_KEY")
         self.llm = llm or get_crew_llm(api_key=self.api_key, provider=provider, model=model)
 
-    def _create_agent(self, role: str, goal: str, backstory: str):
+        try:
+            from crew.tools import TenderSearchTool, ProposalExtractorTool
+            self.search_tool = TenderSearchTool()
+            self.extractor_tool = ProposalExtractorTool()
+        except Exception as tool_err:
+            logger.warning(f"Could not initialize CrewAI tools: {tool_err}")
+            self.search_tool = None
+            self.extractor_tool = None
+
+    def _create_agent(self, role: str, goal: str, backstory: str, tools: Optional[List[Any]] = None):
         agent_kwargs = {
             "role": role,
             "goal": goal,
@@ -85,20 +94,26 @@ class TenderAgents:
         }
         if self.llm:
             agent_kwargs["llm"] = self.llm
+        if tools:
+            agent_kwargs["tools"] = tools
         return Agent(**agent_kwargs)
 
     def tender_selection_agent(self):
+        tools = [self.search_tool] if self.search_tool else None
         return self._create_agent(
             role="Tender Selection Agent",
             goal="Identify the governing GeM tender package, confirm active version, and account for corrigenda.",
-            backstory="You are a Senior GeM Procurement Specialist expert at evaluating official government tender packages."
+            backstory="You are a Senior GeM Procurement Specialist expert at evaluating official government tender packages.",
+            tools=tools
         )
 
     def knowledge_base_agent(self):
+        tools = [self.search_tool] if self.search_tool else None
         return self._create_agent(
             role="Knowledge Base Agent",
             goal="Chunk tender clauses and populate metadata-rich vectors in ChromaDB.",
-            backstory="You are a Vector DB Architect specializing in legal and procurement document chunking and metadata tagging."
+            backstory="You are a Vector DB Architect specializing in legal and procurement document chunking and metadata tagging.",
+            tools=tools
         )
 
     def email_intake_agent(self):
@@ -109,31 +124,39 @@ class TenderAgents:
         )
 
     def extraction_agent(self):
+        tools = [self.extractor_tool] if self.extractor_tool else None
         return self._create_agent(
             role="Extraction Agent",
             goal="Extract structured financial, commercial, and technical fields from vendor submissions.",
-            backstory="You are a Data Extraction Specialist adept at pulling exact prices, tax calculations, and warranty terms."
+            backstory="You are a Data Extraction Specialist adept at pulling exact prices, tax calculations, and warranty terms.",
+            tools=tools
         )
 
     def technical_compliance_agent(self):
+        tools = [t for t in [self.search_tool, self.extractor_tool] if t] or None
         return self._create_agent(
             role="Technical Compliance Agent",
             goal="Map vendor technical evidence against mandatory tender specifications. Mark a certification/document requirement as Compliant only if a specific certificate number, reference ID, or validity date is present in the vendor's text. If the vendor only makes a general claim without a verifiable reference, mark as Review Required.",
-            backstory="You are a Technical Auditor responsible for verifying whether offered vendor products meet mandatory GeM parameters."
+            backstory="You are a Technical Auditor responsible for verifying whether offered vendor products meet mandatory GeM parameters.",
+            tools=tools
         )
 
     def commercial_analysis_agent(self):
+        tools = [t for t in [self.search_tool, self.extractor_tool] if t] or None
         return self._create_agent(
             role="Commercial Analysis Agent",
             goal="Normalize vendor price quotes, taxes, delivery lead-times, and payment terms into a comparable cost matrix.",
-            backstory="You are a Commercial Financial Analyst expert in GeM price evaluation and L-1 determination."
+            backstory="You are a Commercial Financial Analyst expert in GeM price evaluation and L-1 determination.",
+            tools=tools
         )
 
     def risk_and_evidence_agent(self):
+        tools = [self.search_tool] if self.search_tool else None
         return self._create_agent(
             role="Risk and Evidence Agent",
             goal="Identify compliance gaps, unverified claims, missing certificates, and low-confidence extractions. Flag unverified claims lacking certificate numbers or proof as Review Required.",
-            backstory="You are a Procurement Risk Assessor tasked with catching potential discrepancies and raising formal clarification queries."
+            backstory="You are a Procurement Risk Assessor tasked with catching potential discrepancies and raising formal clarification queries.",
+            tools=tools
         )
 
     def evaluation_writer_agent(self):
