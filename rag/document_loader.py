@@ -74,7 +74,12 @@ class DocumentLoader:
         try:
             loader_fn = loaders.get(ext)
             if loader_fn:
-                return loader_fn(file_path, filename)
+                result = loader_fn(file_path, filename)
+                # Centralized text cleaning for all document formats
+                for page in result.get("pages", []):
+                    if page.get("content"):
+                        page["content"] = DocumentLoader.clean_english_text(page["content"])
+                return result
             
             logger.warning(f"Unsupported extension {ext} for file {filename}")
             return {
