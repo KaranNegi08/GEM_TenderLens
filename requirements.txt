@@ -17,4 +17,5 @@ cohere
 mistralai
 sentence-transformers
 litellm
+markdown
 
