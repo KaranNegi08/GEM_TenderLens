@@ -4,7 +4,7 @@ Maps transactional database tables for audit logging, reviewer sign-offs, and te
 """
 
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Text, Integer, JSON, Boolean
+from sqlalchemy import Column, String, DateTime, Text, Integer, Float, JSON, Boolean
 from services.database import Base
 
 
@@ -66,4 +66,25 @@ class TenderRequirementORM(Base):
 
     def __repr__(self):
         return f"<TenderRequirementORM(requirement_id='{self.requirement_id}', tender_id='{self.tender_id}')>"
+
+
+class VendorSubmissionORM(Base):
+    """ORM mapping for vendor submission revisions."""
+    __tablename__ = "vendor_submissions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(String(64), index=True, nullable=False)
+    vendor_name = Column(String(256), nullable=False)
+    tender_id = Column(String(128), index=True, nullable=False)
+    revision_number = Column(Integer, nullable=False, default=1)
+    quoted_amount = Column(Float, nullable=True)
+    tax_amount = Column(Float, nullable=True)
+    delivery_days = Column(Integer, nullable=True)
+    warranty_months = Column(Integer, nullable=True)
+    full_text_snapshot = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    def __repr__(self):
+        return f"<VendorSubmissionORM(vendor_id='{self.vendor_id}', tender_id='{self.tender_id}', rev={self.revision_number})>"
+
 
