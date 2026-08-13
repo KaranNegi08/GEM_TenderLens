@@ -97,12 +97,19 @@ with col_b:
             v_name = sub.vendor_name if hasattr(sub, "vendor_name") else dossier.get("vendor_name", f"Vendor {idx}")
             q_amt = prop.quoted_amount if hasattr(prop, "quoted_amount") else 0.0
             
-            with st.expander(f"📁 Vendor #{idx}: {v_name}", expanded=True):
+            rev_num = getattr(sub, "revision_number", 1) if sub else 1
+            with st.expander(f"📁 Vendor #{idx}: {v_name} (Revision {rev_num})", expanded=True):
                 st.write(f"**Quoted Base Price:** INR {q_amt:,.2f}" if q_amt else "**Quoted Price:** Unparsed")
                 st.write(f"**Offered Delivery:** {prop.delivery_days if hasattr(prop, 'delivery_days') else 21} Days")
                 if dossier.get("manual_review_required"):
                     st.warning("⚠️ Document contains scanned/image-only pages. Manual review required.")
                 else:
                     st.success("🟢 Text-accessible document verified.")
+
+                if rev_num > 1:
+                    with st.expander("📜 View Revision History", expanded=False):
+                        history = vendor_service.get_submission_history(sub.vendor_id, sub.tender_id)
+                        if history:
+                            st.dataframe(history, use_container_width=True)
     else:
         st.info("No vendor submissions loaded yet. Upload vendor proposal files using the form on the left.")
