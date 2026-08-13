@@ -39,6 +39,22 @@ class VendorService:
         self.chroma_manager = chroma_manager or ChromaDBClientManager()
         self.embedding_provider = VectorEmbeddingProvider()
 
+    @staticmethod
+    def _get_next_revision_number(vendor_id: str, tender_id: str) -> int:
+        try:
+            from services.database import get_db_session, init_db
+            from services.db_models import VendorSubmissionORM
+            init_db()
+            with get_db_session() as session:
+                count = session.query(VendorSubmissionORM).filter(
+                    VendorSubmissionORM.vendor_id == vendor_id,
+                    VendorSubmissionORM.tender_id == tender_id
+                ).count()
+                return count + 1
+        except Exception as e:
+            logger.warning(f"Could not determine revision number, defaulting to 1: {e}")
+            return 1
+
     @traceable(name="Vendor Submission Intake")
     def process_vendor_submission(
         self,
@@ -53,6 +69,8 @@ class VendorService:
         vendor_id = f"VEND_{name_clean}_{name_hash}"
         logger.info(f"Processing vendor submission: '{vendor_name}' ({vendor_id}) for tender '{tender_id}'")
 
+        revision_num = self._get_next_revision_number(vendor_id, tender_id)
+
         try:
             submission = VendorSubmission(
                 vendor_id=vendor_id,
@@ -60,7 +78,7 @@ class VendorService:
                 tender_id=tender_id,
                 email_subject=email_subject or f"Proposal for {tender_id} from {vendor_name}",
                 received_at=datetime.now(),
-                revision_number=1,
+                revision_number=revision_num,
                 attachment_paths=file_paths
             )
 
@@ -114,6 +132,24 @@ class VendorService:
 
             proposal = self._extract_proposal_fields(vendor_id, full_proposal_text)
 
+            try:
+                from services.database import get_db_session
+                from services.db_models import VendorSubmissionORM
+                with get_db_session() as session:
+                    session.add(VendorSubmissionORM(
+                        vendor_id=vendor_id,
+                        vendor_name=vendor_name,
+                        tender_id=tender_id,
+                        revision_number=revision_num,
+                        quoted_amount=proposal.quoted_amount if proposal else None,
+                        tax_amount=proposal.tax_amount if proposal else None,
+                        delivery_days=proposal.delivery_days if proposal else None,
+                        warranty_months=proposal.warranty_months if proposal else None,
+                        full_text_snapshot=full_proposal_text[:5000] if full_proposal_text else None
+                    ))
+            except Exception as e:
+                logger.warning(f"Could not persist submission-revision snapshot: {e}")
+
             # Audit Log: Record vendor intake event
             try:
                 from services.audit_service import DatabaseAuditService
@@ -152,3 +188,30 @@ class VendorService:
         """Extracts numerical & technical values from text using consolidated proposal_extractor utility."""
         from utils.proposal_extractor import extract_proposal_fields_from_text
         return extract_proposal_fields_from_text(vendor_id, text)
+
+    @staticmethod
+    def get_submission_history(vendor_id: str, tender_id: str) -> list:
+        """Returns all past revisions for a vendor+tender, ordered oldest to newest."""
+        try:
+            from services.database import get_db_session
+            from services.db_models import VendorSubmissionORM
+            with get_db_session() as session:
+                records = session.query(VendorSubmissionORM).filter(
+                    VendorSubmissionORM.vendor_id == vendor_id,
+                    VendorSubmissionORM.tender_id == tender_id
+                ).order_by(VendorSubmissionORM.revision_number.asc()).all()
+                return [
+                    {
+                        "revision_number": r.revision_number,
+                        "quoted_amount": r.quoted_amount,
+                        "tax_amount": r.tax_amount,
+                        "delivery_days": r.delivery_days,
+                        "warranty_months": r.warranty_months,
+                        "created_at": r.created_at.isoformat() if r.created_at else None
+                    }
+                    for r in records
+                ]
+        except Exception as e:
+            logger.warning(f"Could not fetch submission history: {e}")
+            return []
+
