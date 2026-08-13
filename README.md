@@ -1,868 +1,248 @@
-🚀 GeM TenderLens — Multi-Agent Tender Proposal Comparison System
-
-GeM TenderLens is an enterprise-oriented GenAI procurement evaluation system that helps procurement teams analyze vendor proposals against official Government e-Marketplace (GeM) tender requirements.
-
-The system combines RAG, CrewAI multi-agent orchestration, ChromaDB, Mistral AI, Cohere, PostgreSQL, MCP, Pydantic v2, Streamlit, and LangSmith to provide evidence-backed technical and commercial evaluation.
-
-It supports multi-format document ingestion, clause-level retrieval with citations, vendor comparison, compliance analysis, audit trails, human-in-the-loop review, and committee-ready report exports.
-
-Important: GeM TenderLens is a decision-support system. Final procurement and award decisions remain with authorized procurement officials.
-
-✨ Key Features
-
-📑 Tender Workspace & Versioning
-
-Select and manage governing GeM tender documents.
-
-Handle bid documents, technical specifications, BOQ files, and corrigenda.
-
-Maintain isolated ChromaDB collections for each tender.
-
-📂 Multi-Format Vendor Intake
-
-Supports .eml, .pdf, .docx, .xlsx, .csv, and .txt.
-
-Extracts structured vendor proposal information such as price, GST, delivery SLA, and warranty.
-
-🔍 RAG-Based Clause Search
-
-Searches both tender requirements and vendor proposal content.
-
-Provides source file, page number, clause ID, and excerpt-level evidence.
-
-Uses keyword boosting to improve retrieval of exact procurement terms.
-
-🤖 8-Agent CrewAI Evaluation Pipeline
-
-Tender Selection Agent
-
-Knowledge Base Agent
-
-Email Intake Agent
-
-Accessibility Auditor Agent
-
-RAG Clause Retrieval Agent
-
-Technical Compliance Evaluator
-
-Commercial Analysis Agent
-
-Risk & Evaluation Writer Agent
-
-🛡️ Guardrails & Human-in-the-Loop
-
-Detects scanned/image-only documents.
-
-Flags inaccessible documents for manual review.
-
-Requires reviewer sign-off before final procurement decisions.
-
-Maintains evidence traceability and audit logs.
-
-💰 Commercial Comparison
-
-Normalized vendor price comparison.
-
-L-1 ranking.
-
-GST comparison.
-
-Delivery SLA and warranty comparison.
-
-MSE/MII preference handling.
-
-🔄 Deterministic Fallback
-
-Provides a rule-based comparison engine when LLM credentials are unavailable or API calls fail.
-
-🗄️ PostgreSQL + SQLite Fallback
-
-Stores workspace metadata, reviewer actions, and audit logs.
-
-Automatically creates the application database when required.
-
-Falls back to local SQLite when PostgreSQL is unavailable.
-
-🔌 Model Context Protocol (MCP)
-
-Exposes controlled tools for vector search, proposal extraction, compliance validation, and audit logging.
-
-📊 LangSmith Observability
-
-Supports multi-agent execution tracing, prompt telemetry, and token usage tracking.
-
-📤 Committee-Ready Exports
-
-Markdown (.md)
-
-HTML (.html)
-
-JSON (.json)
-
-PDF (.pdf)
-
+GeM TenderLens — Technical & System Documentation
+> Enterprise Multi-Agent GenAI Procurement Evaluation Platform
+Version: 1.0
+Primary Language: Python 3.11
+UI Framework: Streamlit
+Document Purpose: Architecture, modules, workflow, setup, testing, and governance reference
+---
+Document Overview
+GeM TenderLens is an enterprise-grade, multi-agent GenAI procurement evaluation system designed to analyze Government e-Marketplace (GeM) tender documents and vendor proposals. It combines retrieval-augmented generation, structured validation, multi-agent analysis, deterministic rule-based evaluation, audit logging, and multi-format reporting.
+This document describes the system architecture, technology stack, project structure, core modules, procurement workflow, database design, installation process, testing strategy, and operational safeguards.
+---
+GeM TenderLens is an enterprise-grade, Multi-Agent GenAI procurement evaluation system built for analyzing Government e-Marketplace (GeM) tender documents and vendor proposals. The platform automates tender indexing, proposal field extraction, compliance verification, commercial price normalization (L-1 ranking), risk analysis, and audit-compliant evaluation report generation.
+Table of Contents
+1.	Executive Summary
+2.	System Architecture
+3.	Technology Stack
+4.	Project Directory Structure
+5.	Core System Modules & Services
+•	1. Data Schemas (`schemas/`)
+•	2. RAG & Vector Engine (`rag/`)
+•	3. Core Services Layer (`services/`)
+•	4. Multi-Agent Crew Engine (`crew/`)
+•	5. Model Context Protocol (`mcp_server.py` & `mcp_client.py`)
+•	6. Utility Helpers (`utils/`)
+6.	User Interface & 5-Stage Procurement Workflow
+7.	Database Schema & Audit Logging
+8.	Setup & Installation Guide
+9.	Testing & Verification
+10.	Operational Safety & Governance Guardrails
+Executive Summary
+Evaluating procurement proposals for government tenders requires cross-referencing complex Technical Specification Documents (TSDs), Bills of Quantities (BOQ), commercial price schedules, GST rules, warranty terms, and legal corrigenda. Manual evaluation is prone to errors, oversight of technical non-compliance, and delays.
+GeM TenderLens solves this by pairing:
+•	**Retrieval-Augmented Generation (RAG)** for exact, evidence-backed clause retrieval.
+•	**Pydantic v2 Schema Validation** for structured financial and technical data ingestion.
+•	**8-Agent CrewAI Engine** with dual execution modes (AI Multi-Agent vs. Deterministic Rule Engine fallback).
+•	**Model Context Protocol (MCP)** standard server/client interface for JSON-RPC 2.0 tool invocation.
+•	**4-Format Report Export Service** (ReportLab PDF, HTML/CSS, Markdown, and structured JSON).
 🏗️ System Architecture
-
-                         ┌─────────────────────┐
-                         │   Streamlit UI      │
-                         │  5-Stage Workflow   │
-                         └──────────┬──────────┘
-                                    │
-             ┌──────────────────────┼──────────────────────┐
-             │                      │                      │
-             ▼                      ▼                      ▼
-     Tender Documents       Vendor Proposals        Reviewer Actions
-             │                      │                      │
-             └──────────────┬───────┴──────────────────────┘
-                            ▼
-                  ┌───────────────────┐
-                  │ Document Processing│
-                  │ & Validation       │
-                  └─────────┬─────────┘
-                            │
-                            ▼
-                  ┌───────────────────┐
-                  │ Chunking +        │
-                  │ Metadata          │
-                  └─────────┬─────────┘
-                            │
-                            ▼
-                  ┌───────────────────┐
-                  │ ChromaDB           │
-                  │ Isolated per Tender│
-                  └─────────┬─────────┘
-                            │
-                            ▼
-                  ┌───────────────────┐
-                  │ Dual-Source RAG   │
-                  │ Tender + Vendor   │
-                  └─────────┬─────────┘
-                            │
-                            ▼
-                  ┌───────────────────┐
-                  │ CrewAI             │
-                  │ 8-Agent Evaluation │
-                  └─────────┬─────────┘
-                            │
-             ┌──────────────┼──────────────┐
-             ▼              ▼              ▼
-       Compliance      Commercial       Risk &
-       Evaluation      Comparison       Findings
-             │              │              │
-             └──────────────┼──────────────┘
-                            ▼
-                  ┌───────────────────┐
-                  │ Reviewer Sign-Off │
-                  │ + Audit Trail     │
-                  └─────────┬─────────┘
-                            │
-                            ▼
-                  ┌───────────────────┐
-                  │ Report Export     │
-                  │ MD / HTML / JSON  │
-                  │ PDF               │
-                  └───────────────────┘
-
-🧰 Technology Stack
-
-Category
-
-Technology
-
-Frontend
-
-Streamlit
-
-Language
-
-Python 3.11+
-
-Agent Framework
-
-CrewAI
-
-LLM
-
-Mistral AI
-
-Embeddings
-
-Cohere / SentenceTransformers fallback
-
-Vector Database
-
-ChromaDB
-
-Data Validation
-
-Pydantic v2
-
-Database
-
-PostgreSQL
-
-Local Fallback DB
-
-SQLite
-
-ORM
-
-SQLAlchemy
-
-Agent Communication / Tools
-
-MCP
-
-Observability
-
-LangSmith
-
-PDF Export
-
-ReportLab
-
-Testing
-
-Pytest
-
-Document Formats
-
-PDF, DOCX, XLSX, CSV, EML, TXT
-
-📁 Project Structure
-
-gem-tenderlens/
-│
-├── app.py
-├── flow.txt
-├── mcp_server.py
-├── mcp_client.py
-├── run_tests.py
-├── utils_logger.py
-├── requirements.txt
-├── README.md
-├── .env
-│
-├── pages/
-│   ├── 1_tender_workspace.py
-│   ├── 2_vendor_intake.py
-│   ├── 3_rag_search.py
-│   ├── 4_vendor_comparison.py
-│   └── 5_review_export.py
-│
-├── schemas/
-│   ├── tender.py
-│   ├── vendor.py
-│   ├── evaluation.py
-│   └── audit.py
-│
-├── rag/
-│   ├── chroma_client.py
-│   ├── document_loader.py
-│   ├── chunking.py
-│   ├── embeddings.py
-│   └── retriever.py
-│
-├── crew/
-│   ├── agents.py
-│   ├── tasks.py
-│   ├── tender_crew.py
-│   └── tools.py
-│
-├── services/
-│   ├── tender_service.py
-│   ├── vendor_service.py
-│   ├── comparison_service.py
-│   ├── database.py
-│   ├── db_models.py
-│   ├── audit_service.py
-│   ├── export_service.py
-│   └── validation_service.py
-│
-├── data/
-│   ├── chroma_db/
-│   ├── uploads/
-│   └── create_sample_data.py
-│
-├── docs/
-│   ├── SYSTEM_ARCHITECTURE.md
-│   ├── api_integrations.md
++-----------------------------------------------------------------------------------+
+|                            Streamlit Web Portal (App & 5 Pages)                    |
++-----------------------------------------+-----------------------------------------+
+                                          |
+                                          v
++-----------------------------------------+-----------------------------------------+
+|                               Services Layer & Pydantic v2                        |
+|  (TenderService, VendorService, ComparisonService, ExportService, AuditService)  |
++--------------------+--------------------+--------------------+--------------------+
+                     |                    |                    |
+                     v                    v                    v
++--------------------+----+  +------------+-------+  +---------+--------------------+
+|  CrewAI Multi-Agent     |  | RAG Engine         |  | Model Context Protocol     |
+|  Engine (8 Agents)      |  | (ChromaDB +        |  | (MCP Server & Client      |
+|  AI + Rule Fallback   |  |  Embeddings)       |  |  JSON-RPC 2.0 Interface)   |
++--------------------+----+  +------------+-------+  +---------+--------------------+
+                     |                    |                    |
+                     +--------------------+--------------------+
+                                          |
+                                          v
++-----------------------------------------+-----------------------------------------+
+|                  PostgreSQL / SQLite Database & Data Storage                       |
+|                 (Raw Uploads, Evaluation Records, Audit Logs)                     |
++-----------------------------------------------------------------------------------+
+🛠️ Technology Stack
+| Component | Technology | Description |
+| :--- | :--- | :--- |
+| Frontend UI | Streamlit 1.30+ | 5-screen interactive procurement workspace with state preservation |
+| Language | Python 3.11 | Core business logic, parsing, and async management |
+| Multi-Agent Framework | CrewAI 0.100+ | 8 specialized roles, sequential task assembly, and execution |
+| Data Validation | Pydantic v2 | Type-safe schemas for tenders, submissions, proposals, and findings |
+| Vector DB | ChromaDB | Isolated per-tender collections (`tender_<sanitized_id>`) |
+| Embeddings | Cohere / Sentence-Transformers | 1024-dim embeddings with exponential backoff & local fallback |
+| LLM Orchestration | Mistral AI / Groq / LiteLLM | Multi-agent reasoning, field extraction, and RAG synthesis |
+| File Parser | PyMuPDF, python-docx, openpyxl, pandas | Ingests PDF, DOCX, XLSX, CSV, TXT, and `.eml` emails |
+| Transactional DB | PostgreSQL / SQLite | SQLAlchemy ORM with auto-creation & SQLite fallback |
+| Export Service | ReportLab, Jinja2, JSON, Markdown | Generates executive committee reports in 4 formats |
+| External API | MCP (Model Context Protocol) | JSON-RPC 2.0 standardized tool and resource interface |
+| Telemetry | LangSmith | Multi-agent trace logs, latency tracking, and LLM telemetry |
+📁 Project Directory Structure
+Gem_Tender_Project/
+├── app.py                      # Main Streamlit landing page & global state initializer
+├── mcp_server.py               # Standard MCP JSON-RPC 2.0 Server
+├── mcp_client.py               # MCP Client implementation
+├── utils_logger.py             # Centralized logging configuration
+├── requirements.txt            # Python dependencies
+├── crew/                       # CrewAI Multi-Agent Architecture
+│   ├── __init__.py
+│   ├── agents.py               # 8 Procurement Agent definitions & LLM factory
+│   ├── tasks.py                # Agent task specifications & prompts
+│   ├── tender_crew.py          # Workflow assembly, execution & rule engine fallback
+│   └── tools.py                # Custom tools (TenderSearchTool, ProposalExtractorTool)
+├── rag/                        # Retrieval-Augmented Generation Engine
+│   ├── __init__.py
+│   ├── chroma_client.py        # Persistent ChromaDB client manager
+│   ├── chunking.py             # Sliding-window chunker with 9 metadata tags
+│   ├── document_loader.py      # Multi-format document parser (PDF, DOCX, XLSX, EML)
+│   ├── embeddings.py           # Cohere & Sentence-Transformers embedding pipeline
+│   └── retriever.py            # Evidence-backed RAG search engine with page citations
+├── schemas/                    # Pydantic v2 Data Validation Schemas
+│   ├── __init__.py
+│   ├── audit.py                # Audit log schema
+│   ├── evaluation.py           # Technical compliance & evidence schemas
+│   ├── tender.py               # Tender package & requirement matrix schemas
+│   └── vendor.py               # Vendor submission & proposal schemas
+├── services/                   # Business Services & Persistence Layer
+│   ├── __init__.py
+│   ├── audit_service.py        # Transactional audit log persistence
+│   ├── comparison_service.py   # L-1 determination, commercial cost matrix & risk engine
+│   ├── database.py             # SQLAlchemy engine setup & DB auto-creation
+│   ├── db_models.py            # ORM Database tables (Tenders, Submissions, Audits)
+│   ├── export_service.py       # 4-format report generator (PDF, HTML, MD, JSON)
+│   ├── tender_service.py       # Tender package management & corrigendum handling
+│   ├── validation_service.py   # Cross-schema integrity validator
+│   └── vendor_service.py       # Vendor intake, email parsing, dossier creation
+├── utils/                      # Helper Functions & System Utilities
+│   ├── __init__.py
+│   ├── evaluator_helper.py     # Rule-based compliance evaluation helpers
+│   ├── gst_helper.py           # GST normalization & calculation logic
+│   ├── proposal_extractor.py   # Regex & heuristic price/warranty/delivery extractor
+│   ├── session_state.py        # Streamlit state initialization helper
+│   └── status_badges.py        # UI HTML status pill generators
+├── pages/                      # Streamlit Multi-Page UI Screens
+│   ├── 1_tender_workspace.py   # Active Tender selection, uploading & requirement indexing
+│   ├── 2_vendor_intake.py      # Vendor submission ingestion & field extraction
+│   ├── 3_rag_search.py         # Semantic search portal with clause citations
+│   ├── 4_vendor_comparison.py  # Multi-agent/Rule comparison & L-1 cost matrix
+│   └── 5_review_export.py      # Committee decision sign-off & report export portal
+├── docs/                       # System Architecture & Documentation
 │   ├── architecture.md
-│   ├── chromadb_strategy.md
-│   ├── deployment.md
-│   └── schemas.md
-│
-├── tests/
-│
-└
+│   └── PROJECT_DOCUMENTATION.md
+└── tests/                      # Automated Test Suite (18 Test Files, 47 Tests)
+⚙️ Core System Modules & Services
+1. Data Schemas (`schemas/`)
+Built with Pydantic v2 to ensure type safety:
+•	**`tender.py`**: `TenderRequirement` (clause ID, category, mandatory status) and `TenderPackage` (metadata, documents, requirements).
+•	**`vendor.py`**: `VendorSubmission` (vendor details, timestamps, attachment paths) and `VendorProposal` (quoted amount, tax, delivery, warranty, technical claims, certificates).
+•	**`evaluation.py`**: `EvidenceCitation` (file, page, clause ID, quote) and `EvaluationFinding` (status: `compliant`, `non_compliant`, `review_required`).
+•	**`audit.py`**: `AuditLog` (action type, actor, timestamp, details).
+2. RAG & Vector Engine (`rag/`)
+•	**`chroma_client.py`**: Manages persistent ChromaDB vector collections isolated per tender (`tender_<sanitized_id>`).
+•	**`chunking.py`**: Implements fixed-size sliding-window chunking (default 500 chars with 100 overlap) and attaches 9 metadata tags (tender_id, filename, file_type, page_number, clause_id, section, requirement_type, category, vendor_id).
+•	**`document_loader.py`**: Ingests PDF (PyMuPDF), DOCX, XLSX/CSV (Pandas), TXT, and `.eml` email files. Flags low-density scanned PDFs for OCR review.
+•	**`embeddings.py`**: Dual-mode embedding engine using Cohere API (`embed-english-v3.0`, 1024 dims) with exponential backoff and automatic local `SentenceTransformers` fallback.
+•	**`retriever.py`**: Queries ChromaDB for specific tender requirements and returns top matches formatted with evidence citations.
+3. Core Services Layer (`services/`)
+•	**`tender_service.py`**: Registers tender packages, extracts requirements, handles corrigenda updates, and updates vector store indexes.
+•	**`vendor_service.py`**: Ingests vendor email attachments, runs proposal field extraction, and builds structured vendor dossiers.
+•	**`comparison_service.py`**:
+•	Normalizes base price, GST taxes, delivery timelines, and warranty terms.
+•	Computes **Financial L-1** vs. **Technically Qualified L-1**.
+•	Evaluates Micro and Small Enterprises (MSE) / Make in India (MII) preference rules.
+•	Generates technical compliance matrix and risk queue.
+•	**`export_service.py`**: Exports evaluation reports in 4 formats: ReportLab PDF, styled HTML/CSS, clean Markdown, and raw JSON.
+•	**`audit_service.py`**: Records immutable procurement audit events into PostgreSQL/SQLite.
+•	**`validation_service.py`**: Enforces strict validation checks across tenders and submissions.
+•	**`database.py` & `db_models.py`**: Manages SQLAlchemy ORM models (`TenderModel`, `SubmissionModel`, `AuditLogModel`) with automatic PostgreSQL database creation and SQLite fallback.
+4. Multi-Agent Crew Engine (`crew/`)
+The system employs an 8-Agent Pipeline:
+11.	**Tender Selection Agent**: Confirms active tender version and corrigenda.
+12.	**Knowledge Base Agent**: Indexes clauses and metadata in ChromaDB.
+13.	**Email Intake Agent**: Processes incoming vendor emails and attachments.
+14.	**Extraction Agent**: Extracts financial, tax, warranty, and delivery fields.
+15.	**Technical Compliance Agent**: Maps specifications against mandatory rules.
+16.	**Commercial Analysis Agent**: Ranks vendor bids by total cost and delivery.
+17.	**Risk & Evidence Agent**: Flags compliance gaps and missing proof.
+18.	**Evaluation Writer Agent**: Compiles committee-ready report with page citations.
+Dual-Mode Execution:
+•	**Mode A (CrewAI AI Workflow)**: Active when LLM API key (Mistral/Groq) is present.
+•	**Mode B (Deterministic Rule Engine)**: Fallback execution when offline or without API key.
+5. Model Context Protocol (`mcp_server.py` & `mcp_client.py`)
+Implements standard Model Context Protocol (MCP) via JSON-RPC 2.0:
+•	**`tools/list`**: Exposes registered tools (`vector_search`, `extract_proposal`, `parse_vendor_email`, `list_tenders`).
+•	**`tools/call`**: Executes requested tool with input arguments.
+•	**`resources/list` & `resources/read`**: Lists and retrieves tender package resources.
+6. Utility Helpers (`utils/`)
+•	**`proposal_extractor.py`**: Standardized regex & heuristic extraction of prices, GST, delivery days, warranty, and certificates.
+•	**`evaluator_helper.py`**: Rule-based technical evaluation logic.
+•	**`gst_helper.py`**: GST rate normalization and inclusion checks.
+•	**`session_state.py`**: Centralized Streamlit session state management.
+•	**`status_badges.py`**: HTML status pills for UI rendering.
+🖥️ User Interface & 5-Stage Procurement Workflow
+ app.py (Main Landing Page) 
+          |
+          +--->  Page 1: Tender Workspace  ---> Upload/Select Tender & Index Documents
+          |
+          +--->  Page 2: Vendor Intake     ---> Process Vendor Submissions & Proposals
+          |
+          +--->  Page 3: Tender RAG Search ---> Query Clauses with Page/File Citations
+          |
+          +--->  Page 4: Vendor Comparison ---> Run 8-Agent Crew / Rule Engine & L-1 Matrix
+          |
+          +--->  Page 5: Review & Export   ---> Sign-off Committee Decision & Export Reports
+19.	**Page 1: Tender Workspace**: Upload or select GeM tender documents, view requirement matrix, upload corrigenda, and trigger vector indexing.
+20.	**Page 2: Vendor Intake**: Parse incoming vendor `.eml` emails or proposal files (PDF/DOCX), review extracted prices/taxes, and build dossiers.
+21.	**Page 3: Tender RAG Search**: Perform natural language queries against indexed tender clauses and vendor claims with full evidence citations.
+22.	**Page 4: Vendor Comparison**: Trigger multi-agent or rule evaluation, compare Financial vs. Qualified L-1 bids, inspect MSE preferences, and view risk flags.
+23.	**Page 5: Review & Export**: Record committee decisions, inspect timestamped audit trail, and download evaluation packages in PDF, HTML, MD, or JSON.
+🗄️ Database Schema & Audit Logging
+Database tables defined in `services/db_models.py`:
+•	**`tenders`**: `tender_id` (PK), `title`, `category`, `status`, `created_at`, `requirements_json`, `documents_json`.
+•	**`vendor_submissions`**: `id` (PK), `vendor_id`, `vendor_name`, `tender_id`, `received_at`, `proposal_data_json`, `attachment_paths_json`.
+•	**`audit_logs`**: `log_id` (PK), `timestamp`, `actor`, `action_type`, `details_json`.
+🚀 Setup & Installation Guide
+Prerequisites
+•	Python 3.11+
+•	Virtual Environment (`venv`)
+Installation Steps
+# 1. Clone repository
+git clone https://github.com/KaranNegi08/GEM_TenderLens.git
+cd GEM_TenderLens
 
-⚙️ Prerequisites
-
-Before running the project, make sure you have:
-
-Python 3.11+
-
-PostgreSQL (optional because SQLite fallback is available)
-
-Mistral AI API key
-
-Cohere API key
-
-LangSmith API key (optional, for observability)
-
-🚀 Installation
-
-1. Clone the repository
-
-git clone <YOUR_GITHUB_REPOSITORY_URL>
-cd gem-tenderlens
-
-2. Create a virtual environment
-
-Windows
-
+# 2. Create and activate virtual environment
 python -m venv .venv
-.venv\Scripts\activate
-
-Linux / macOS
-
-python3 -m venv .venv
+# On Windows:
+.venvScriptsactivate
+# On Linux/macOS:
 source .venv/bin/activate
 
-3. Install dependencies
-
+# 3. Install required packages
 pip install -r requirements.txt
 
-🔐 Environment Configuration
-
-Create a .env file in the project root.
-
-# Mistral
-MISTRAL_API_KEY=your_mistral_api_key
-MISTRAL_MODEL=mistral-small-latest
-
-# Cohere
-COHERE_API_KEY=your_cohere_api_key
-COHERE_MODEL=embed-english-v3.0
-
-# PostgreSQL
-DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/tenderlens_db
-
-# Storage
-CHROMA_PERSIST_DIRECTORY=./data/chroma_db
-STORAGE_BUCKET=./data/uploads
-
-# LangSmith
-LANGSMITH_TRACING=true
-LANGSMITH_API_KEY=your_langsmith_api_key
-LANGSMITH_PROJECT=gem-tenderlens
-
-⚠️ Security
-
-Never commit .env or API keys/passwords to GitHub.
-
-Add the following to .gitignore:
-
-.env
-.venv/
-__pycache__/
-*.pyc
-
-data/chroma_db/
-data/uploads/
-data/*.db
-
-.pytest_cache/
-.streamlit/secrets.toml
-
-🧪 Generate Sample Data
-
-The project includes a sample-data generator.
-
-python data/create_sample_data.py
-
-✅ Run Tests
-
-Run the complete test suite:
-
-python run_tests.py
-
-Or use Pytest directly:
-
-pytest tests/ -v
-
-▶️ Run the Application
-
-Start the Streamlit application:
-
+# 4. Configure Environment Variables (.env)
+cp .env.example .env  # or edit .env
+Environment Configuration (`.env`)
+MISTRAL_API_KEY=your_mistral_api_key_here
+COHERE_API_KEY=your_cohere_api_key_here
+DATABASE_URL=sqlite:///./tenderlens.db  # or postgresql://user:pass@localhost:5432/tenderlens_db
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your_langsmith_api_key_here
+Running the Web Application
 streamlit run app.py
-
-The application provides a five-stage procurement workflow.
-
-🔄 Application Workflow
-
-Stage 1 — Tender Workspace
-
-Select or enter a GeM Tender ID.
-
-Upload the official tender package.
-
-Upload specifications, BOQ, and corrigenda when applicable.
-
-Extract requirements and metadata.
-
-Build an isolated ChromaDB collection.
-
-Tender Package
-      ↓
-Document Loader
-      ↓
-Chunking
-      ↓
-Metadata Extraction
-      ↓
-Embeddings
-      ↓
-ChromaDB
-
-Stage 2 — Vendor Intake
-
-Vendor proposal emails and documents are ingested and converted into structured proposal dossiers.
-
-Extracted information can include:
-
-Quoted Price
-
-GST
-
-Delivery SLA
-
-Warranty
-
-Proposal claims
-
-Document accessibility status
-
-Vendor proposal chunks are stored with:
-
-document_type = "vendor_proposal"
-
-Stage 3 — RAG Clause Search
-
-Users can ask natural-language procurement questions such as:
-
-What is the warranty and payment term requirement?
-
-The retriever searches:
-
-Tender Requirements
-        +
-Vendor Proposals
-        ↓
-Relevant Evidence
-        ↓
-Mistral AI Synthesis
-        ↓
-Answer + Citations
-
-Evidence includes:
-
-Source file
-
-Page number
-
-Clause ID
-
-Relevant excerpt
-
-Stage 4 — Vendor Comparison
-
-The CrewAI evaluation pipeline analyzes vendors for:
-
-Technical Compliance
-
-Requirement
-    ↓
-Vendor Evidence
-    ↓
-Compliance Evaluation
-    ↓
-Finding + Citation
-
-Commercial Comparison
-
-The system normalizes vendor commercial information and compares:
-
-Base price
-
-GST
-
-Total price
-
-L-1 ranking
-
-Delivery SLA
-
-Warranty
-
-Applicable MSE/MII preference
-
-If LLM execution fails, the deterministic comparison service can be used as a fallback.
-
-Stage 5 — Review & Export
-
-Reviewers can:
-
-Approve findings
-
-Reject findings
-
-Request clarification
-
-Record committee decisions
-
-Review audit logs
-
-Export the final evaluation package
-
-Supported exports:
-
-Markdown
-HTML
-JSON
-PDF
-
-🤖 Multi-Agent Architecture
-
-The CrewAI pipeline contains eight specialized agents:
-
-Agent
-
-Responsibility
-
-Tender Selection Agent
-
-Selects and manages the governing tender package
-
-Knowledge Base Agent
-
-Builds and manages tender knowledge
-
-Email Intake Agent
-
-Processes vendor proposal emails
-
-Accessibility Auditor
-
-Detects scanned/inaccessible documents
-
-RAG Clause Retrieval Agent
-
-Retrieves clause-level evidence
-
-Technical Compliance Agent
-
-Evaluates technical requirements
-
-Commercial Analysis Agent
-
-Performs normalized commercial comparison
-
-Risk & Evaluation Writer
-
-Produces findings and evaluation output
-
-This separation allows each agent to focus on a specific procurement responsibility instead of relying on one general-purpose agent.
-
-🔍 RAG Design
-
-GeM TenderLens uses a dual-source retrieval strategy.
-
-                 User Query
-                     │
-                     ▼
-              Query Processing
-                     │
-          ┌──────────┴──────────┐
-          ▼                     ▼
- Tender Requirement       Vendor Proposal
-     Chunks                    Chunks
-          │                     │
-          └──────────┬──────────┘
-                     ▼
-              Hybrid Retrieval
-                     │
-             Keyword Boosting
-                     │
-                     ▼
-              Relevant Evidence
-                     │
-                     ▼
-             Mistral AI Synthesis
-                     │
-                     ▼
-           Answer + Source Citations
-
-Each tender maintains an isolated vector collection using a tender-specific identifier such as:
-
-tender_<tender_id>
-
-This helps prevent cross-tender retrieval contamination.
-
-🛡️ Guardrails
-
-1. Human-in-the-Loop
-
-AI recommendations are decision support only. Authorized procurement officials make final award decisions.
-
-2. Evidence Traceability
-
-Material findings are linked to source evidence such as:
-
-Source File
-Page Number
-Clause ID
-Excerpt
-
-3. Scanned Document Detection
-
-Scanned or image-only documents are flagged for manual review.
-
-is_scanned = True
-
-4. Tender Isolation
-
-Each tender uses its own vector collection:
-
-tender_<id>
-
-5. LLM Failure Fallback
-
-If an LLM/API call fails, the system can use deterministic rule-based comparison logic where supported.
-
-6. Database Fallback
-
-PostgreSQL is the primary database, with SQLite available as a local fallback.
-
-🗄️ Data & Persistence
-
-ChromaDB
-
-Used for:
-
-Tender requirement chunks
-
-Vendor proposal chunks
-
-Semantic retrieval
-
-Tender-specific vector isolation
-
-PostgreSQL
-
-Used for transactional information such as:
-
-Tender workspaces
-
-Reviewer actions
-
-Audit logs
-
-Evaluation metadata
-
-SQLite
-
-Used as a fallback when PostgreSQL is unavailable.
-
-📊 Example Evaluation Flow
-
-Official Tender
-      │
-      ├── Technical Requirements
-      ├── Commercial Requirements
-      ├── Delivery Requirements
-      └── Warranty / Payment Terms
-              │
-              ▼
-        Knowledge Base
-              │
-              ▼
-       Vendor Proposals
-              │
-              ▼
-       RAG Evidence Retrieval
-              │
-              ▼
-       CrewAI Evaluation
-              │
-       ┌──────┴───────┐
-       ▼              ▼
-Technical          Commercial
-Compliance         Comparison
-       │              │
-       └──────┬───────┘
-              ▼
-       Risk & Findings
-              │
-              ▼
-       Human Review
-              │
-              ▼
-     Committee Decision
-              │
-              ▼
-       Final Evaluation
-
-📤 Export Formats
-
-The system can generate committee-ready evaluation packages in:
-
-Format
-
-Purpose
-
-Markdown
-
-Developer/reviewer-friendly report
-
-HTML
-
-Browser-based report
-
-JSON
-
-Machine-readable evaluation output
-
-PDF
-
-Committee-ready document
-
-🧪 Testing
-
-The project contains unit and integration tests covering major application components.
-
-Run:
-
-pytest tests/ -v
-
-or:
-
-python run_tests.py
-
-📚 Documentation
-
-Additional project documentation is available under the docs/ directory:
-
-docs/
-├── SYSTEM_ARCHITECTURE.md
-├── api_integrations.md
-├── architecture.md
-├── chromadb_strategy.md
-├── deployment.md
-└── schemas.md
-
-🔐 Production Security Recommendations
-
-Before deploying this project to production:
-
-Store secrets using environment variables or a secret manager.
-
-Never commit API keys, database passwords, or .env files.
-
-Restrict database access.
-
-Enable authentication and authorization for procurement users.
-
-Encrypt sensitive uploaded documents.
-
-Implement access control between procurement teams/tenants.
-
-Configure secure logging and monitoring.
-
-Review all AI-generated findings before official procurement decisions.
-
-🚢 Deployment
-
-Deployment manifests are provided under:
-
-deployment/
-├── Dockerfile
-├── railway.json
-└── render.yaml
-
-The project documentation also contains deployment guidance for supported environments.
-
-🎯 Project Goals
-
-GeM TenderLens is designed to reduce the manual effort involved in:
-
-Reading large tender documents
-
-Finding mandatory clauses
-
-Comparing vendor proposals
-
-Validating technical compliance
-
-Normalizing commercial offers
-
-Tracking reviewer decisions
-
-Maintaining evidence traceability
-
-Preparing committee evaluation reports
-
-The goal is not to replace procurement officers, but to provide them with a faster, traceable, and evidence-backed evaluation workflow.
-
-👨‍💻 Author
-
-Karan Negi
-
-Data Engineering / GenAI Developer
-
-Interests:
-
-Data Engineering
-
-Generative AI
-
-RAG Systems
-
-Agentic AI
-
-AWS
-
-Python
-
-PySpark
-
-Data Pipelines
-
-⭐ Future Enhancements
-
-Potential future improvements include:
-
-Advanced OCR integration for scanned tender documents
-
-Fine-grained role-based access control
-
-Multi-tenant cloud deployment
-
-Advanced evaluation benchmarks for agent accuracy
-
-Automated procurement policy validation
-
-Improved multilingual document processing
-
-Real-time procurement workflow notifications
-
-Enhanced dashboard analytics
-
-📄 License
-
-Add your preferred open-source or proprietary license before publishing the repository.
-
-⭐ Support
-
-If you find the project useful, consider giving the repository a ⭐ on GitHub.
+Testing the MCP Interface
+python mcp_server.py
+python mcp_client.py
+🧪 Testing & Verification
+The project features a comprehensive unit & integration test suite (18 test files, 47 test cases):
+# Run full test suite
+python -m pytest tests/
+
+# Run individual module tests
+python -m pytest tests/test_mcp_interface.py
+python -m pytest tests/test_schemas.py
+python -m pytest tests/test_vendor_service_fixes.py
+🔐 Operational Safety & Governance Guardrails
+24.	**Human-in-the-Loop Sign-off**: GeM TenderLens is a decision-support system. Final procurement contract awards must be signed off by human procurement officers.
+25.	**Strict Evidence Traceability**: Every finding includes exact document citations (file name, page number, clause reference).
+26.	**Review Flags for Low Confidence**: Extraction confidence scores below `0.70` or unverified vendor claims trigger mandatory human review alerts.
+27.	**Isolated Vector Storage**: Each tender workspace operates within a strictly isolated ChromaDB collection (`tender_<id>`), preventing cross-tender data leakages.
+28.	**Immutable Audit Trail**: All key actions (intake, search, crew evaluation runs, report exports) produce timestamped audit logs.
