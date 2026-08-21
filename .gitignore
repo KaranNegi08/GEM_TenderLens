@@ -68,6 +68,9 @@ instance/
 # Scrapy stuff:
 .scrapy
 
+data/chroma_db/
+data/*.db
+
 # Sphinx documentation
 docs/_build/
 
@@ -216,3 +219,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+data/chroma_db/
+data/*.db
