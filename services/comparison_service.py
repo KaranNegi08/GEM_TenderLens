@@ -162,8 +162,42 @@ class ComparisonService:
                     {"requirement_id": "ELIG-04", "name": "MSE / Udyam Registration & Declarations", "requirement_text": "MSE / Udyam Registration & Declarations", "clause_id": "ELIG-04"}
                 ]
 
+        # 1. Live Multi-Hop Retrieval: Query ChromaDB for active tender corrigenda / amendments
+        live_corrigenda_chunks = []
+        try:
+            corr_search = self.retriever.search_tender_knowledge(
+                tender_id=tender_id,
+                query="corrigendum addendum amendment specification warranty delivery requirement clause",
+                n_results=5
+            )
+            live_corrigenda_chunks = [
+                c for c in corr_search
+                if str(c.get("metadata", {}).get("document_type", "")).lower() == "corrigendum"
+                or "corrigendum" in str(c.get("metadata", {}).get("source_file", "")).lower()
+                or "addendum" in str(c.get("metadata", {}).get("source_file", "")).lower()
+            ]
+        except Exception as corr_err:
+            logger.warning(f"Could not perform live corrigenda search for tender '{tender_id}': {corr_err}")
+
+        corrigendum_combined_text = " ".join([c["text"] for c in live_corrigenda_chunks])
+
         for dossier in vendor_dossiers:
             v_id, v_name, prop, full_text = self._extract_dossier_info(dossier)
+
+            # 2. Live Multi-Hop Retrieval: Query ChromaDB for live multi-document vendor evidence
+            live_vendor_text = ""
+            try:
+                v_search = self.retriever.search_tender_knowledge(
+                    tender_id=tender_id,
+                    query=f"vendor {v_name} proposal specification warranty delivery certificate",
+                    n_results=4,
+                    document_type="vendor_proposal"
+                )
+                live_vendor_text = " ".join([c["text"] for c in v_search])
+            except Exception as v_err:
+                logger.debug(f"Live vendor evidence query notice for vendor '{v_name}': {v_err}")
+
+            combined_vendor_text = (full_text + " " + live_vendor_text).strip()
 
             for req in stored_requirements:
                 r_id = req.get("requirement_id") or req.get("id") or "REQ_GENERIC"
@@ -172,17 +206,39 @@ class ComparisonService:
 
                 is_books_tender = "7798305" in tender_id.lower() or "book" in tender_id.lower()
                 if r_id in ["REQ_001", "REQ_002", "REQ_003", "REQ_004", "REQ_005"] and is_books_tender:
-                    status, explanation, confidence = self._evaluate_books_req(r_id, full_text, prop)
+                    status, explanation, confidence = self._evaluate_books_req(r_id, combined_vendor_text, prop, corrigendum_text=corrigendum_combined_text)
                 elif r_id in ["TS-01", "TS-02", "TS-03", "TS-04", "TS-05", "ELIG-01", "ELIG-02", "ELIG-03", "ELIG-04"] and not is_books_tender:
-                    status, explanation, confidence = self._evaluate_hardware_req(r_id, full_text)
+                    status, explanation, confidence = self._evaluate_hardware_req(r_id, combined_vendor_text, corrigendum_text=corrigendum_combined_text)
                 else:
-                    status, explanation, confidence = evaluate_generic_requirement(req, full_text, prop)
+                    status, explanation, confidence = evaluate_generic_requirement(
+                        req, combined_vendor_text, prop,
+                        corrigendum_text=corrigendum_combined_text,
+                        vendor_evidence_text=live_vendor_text
+                    )
+
+                # Determine Tender Citation (referencing Corrigendum if live corrigendum chunk matches requirement)
+                tender_source_file = f"GeM_Bid_{tender_id}.pdf"
+                tender_page = req.get("page_number") or 1
+                tender_clause = clause_id
+                tender_excerpt = f"Mandatory Requirement: {req_name}"
+
+                matching_corr = [
+                    c for c in live_corrigenda_chunks
+                    if any(k in c["text"].lower() for k in req_name.lower().split() if len(k) > 3)
+                ]
+                if matching_corr:
+                    top_corr = matching_corr[0]
+                    corr_meta = top_corr.get("metadata", {})
+                    tender_source_file = corr_meta.get("source_file", tender_source_file)
+                    tender_page = corr_meta.get("page_number", 1)
+                    tender_clause = corr_meta.get("clause_id", "CORRIGENDUM_CLAUSE")
+                    tender_excerpt = f"[Latest Corrigendum Override] {top_corr['text'][:200]}..."
 
                 tender_cit = EvidenceCitation(
-                    source_file=f"GeM_Bid_{tender_id}.pdf",
-                    page_number=req.get("page_number") or 1,
-                    clause_id=clause_id,
-                    excerpt=f"Mandatory Requirement: {req_name}"
+                    source_file=tender_source_file,
+                    page_number=tender_page,
+                    clause_id=tender_clause,
+                    excerpt=tender_excerpt
                 )
 
                 vendor_cit = EvidenceCitation(
@@ -216,9 +272,11 @@ class ComparisonService:
 
         return findings
 
+
     @staticmethod
-    def _evaluate_books_req(r_id: str, full_text: str, prop: Any) -> Tuple[str, str, float]:
+    def _evaluate_books_req(r_id: str, full_text: str, prop: Any, corrigendum_text: str = "") -> Tuple[str, str, float]:
         """Evaluates compliance for books tender requirements (REQ_001 - REQ_005)."""
+        corr_lower = (corrigendum_text or "").lower()
         if r_id == "REQ_001":
             if "book" in full_text or "author" in full_text or "title" in full_text:
                 return "compliant", "All required book titles and quantities matched.", 0.95
@@ -226,9 +284,12 @@ class ComparisonService:
 
         if r_id == "REQ_002":
             d_days = getattr(prop, "delivery_days", 21) if hasattr(prop, "delivery_days") else (prop.get("delivery_days", 21) if isinstance(prop, dict) else 21)
-            if d_days <= 21:
-                return "compliant", f"Offered delivery period ({d_days} days) meets mandatory 21-day schedule.", 0.95
-            return "non_compliant", f"Offered delivery period ({d_days} days) exceeds mandatory limit of 21 days.", 0.90
+            max_days = 21
+            if "14 days" in corr_lower or "15 days" in corr_lower:
+                max_days = 14 if "14 days" in corr_lower else 15
+            if d_days <= max_days:
+                return "compliant", f"Offered delivery period ({d_days} days) meets mandatory {max_days}-day schedule.", 0.95
+            return "non_compliant", f"Offered delivery period ({d_days} days) exceeds mandatory limit of {max_days} days.", 0.90
 
         if r_id == "REQ_003":
             if "experience" in full_text or "past performance" in full_text or "order" in full_text:
@@ -248,15 +309,23 @@ class ComparisonService:
         return "compliant", "Fully compliant with documentary proof provided.", 0.95
 
     @staticmethod
-    def _evaluate_hardware_req(r_id: str, full_text: str) -> Tuple[str, str, float]:
+    def _evaluate_hardware_req(r_id: str, full_text: str, corrigendum_text: str = "") -> Tuple[str, str, float]:
         """Evaluates compliance for hardware tender requirements (TS-01 - TS-05, ELIG-01 - ELIG-04)."""
+        corr_lower = (corrigendum_text or "").lower()
+
         if r_id == "TS-01":
             if "laptop" in full_text:
-                laptop_snippet = "\n".join([l for l in full_text.splitlines() if "laptop" in l or "core i5" in l or "war-01" in l])
+                required_warranty = 3
+                if "5 year" in corr_lower or "5-yr" in corr_lower or "60 month" in corr_lower:
+                    required_warranty = 5
+                laptop_snippet = "\n".join([l for l in full_text.splitlines() if "laptop" in l or "core i5" in l or "war-01" in l or "warranty" in l])
+                if required_warranty == 5 and not any(w in laptop_snippet for w in ["5 year", "5-yr", "5yr", "60 month"]):
+                    return "non_compliant", f"Offered laptop warranty is below latest corrigendum requirement ({required_warranty} years).", 0.95
                 if any(w in laptop_snippet for w in ["2 year", "2-yr", "2yr", "2 years"]):
-                    return "non_compliant", "Offered laptop warranty (2 years on-site) is below mandatory 3-year requirement (WAR-01).", 0.95
-                return "compliant", "Core i5, 8GB RAM, 512GB SSD, 3-year warranty satisfied.", 0.95
+                    return "non_compliant", f"Offered laptop warranty (2 years on-site) is below mandatory {required_warranty}-year requirement.", 0.95
+                return "compliant", f"Core i5, 8GB RAM, 512GB SSD, {required_warranty}-year warranty satisfied.", 0.95
             return "review_required", "Laptop specification details missing.", 0.60
+
 
         if r_id == "TS-02":
             if "printer" in full_text or "laser" in full_text:
