@@ -13,10 +13,13 @@ logger = get_logger(__name__)
 def evaluate_generic_requirement(
     req: Dict[str, Any],
     full_text: str,
-    proposal: Any
+    proposal: Any,
+    corrigendum_text: str = "",
+    vendor_evidence_text: str = ""
 ) -> Tuple[str, str, float]:
     """
-    Evaluates compliance of a vendor proposal against an arbitrary tender requirement.
+    Evaluates compliance of a vendor proposal against an arbitrary tender requirement,
+    incorporating live retrieved corrigenda/amendments and multi-document vendor context.
 
     Returns:
         (status, explanation, confidence)
@@ -24,8 +27,13 @@ def evaluate_generic_requirement(
     """
     r_id = req.get("requirement_id", "REQ_GENERIC")
     req_name = req.get("name") or req.get("requirement_name") or req.get("requirement_text", "")[:80]
-    req_text = (req.get("requirement_text", "") + " " + req_name).lower()
-    full_text_lower = full_text.lower()
+    
+    # Combine requirement text with any live retrieved corrigenda/amendments
+    combined_req = (req.get("requirement_text", "") + " " + req_name + " " + (corrigendum_text or "")).lower()
+    req_text = combined_req
+
+    # Combine vendor proposal text with any live retrieved vendor evidence
+    full_text_lower = (full_text + " " + (vendor_evidence_text or "")).lower()
 
     # Get proposal attributes safely
     def _get_prop(attr: str, default: Any) -> Any:
