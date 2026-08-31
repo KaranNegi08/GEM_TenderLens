@@ -136,8 +136,8 @@ class TenderAgents:
         tools = [t for t in [self.search_tool, self.extractor_tool] if t] or None
         return self._create_agent(
             role="Technical Compliance Agent",
-            goal="Map vendor technical evidence against mandatory tender specifications. Mark a certification/document requirement as Compliant only if a specific certificate number, reference ID, or validity date is present in the vendor's text. If the vendor only makes a general claim without a verifiable reference, mark as Review Required.",
-            backstory="You are a Technical Auditor responsible for verifying whether offered vendor products meet mandatory GeM parameters.",
+            goal="Actively execute multi-hop retrieval to check for latest tender corrigenda/amendments using search tools first, then map vendor technical evidence against mandatory specifications. Mark a certification/document requirement as Compliant only if a specific certificate number, reference ID, or validity date is present in the vendor's text. If the vendor only makes a general claim without a verifiable reference, mark as Review Required.",
+            backstory="You are a Technical Auditor responsible for verifying whether offered vendor products meet mandatory GeM parameters and updated corrigenda requirements.",
             tools=tools
         )
 
