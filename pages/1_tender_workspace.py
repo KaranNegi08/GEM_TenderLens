@@ -103,9 +103,8 @@ with col_right:
     doc_type_selected = st.selectbox(
         "Document Type Category (Fallback):",
         ["bid_document", "technical_spec", "boq", "corrigendum"],
-        help="Filename se type automatically detect hoga (jaise 'boq' ya 'spec' filename mein ho); ye dropdown sirf tab use hoga jab detect na ho paye."
+        help="Select document category if automatic detection is not applicable."
     )
-    st.caption("ℹ️ Filename se type automatically detect hoga (jaise 'boq' ya 'spec' filename mein ho); ye dropdown sirf tab use hoga jab detect na ho paye.")
 
     if uploaded_files:
         if st.button("Process & Index Uploaded Documents"):
