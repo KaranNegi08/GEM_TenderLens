@@ -12,16 +12,29 @@ from utils_logger import get_logger
 logger = get_logger(__name__)
 
 CHROMA_PATH = os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/chroma_db")
+_shared_clients: Dict[str, Any] = {}
 
 
 class ChromaDBClientManager:
     """Manages persistent ChromaDB vector storage with collection isolation per tender."""
 
     def __init__(self, persist_directory: str = CHROMA_PATH):
-        self.persist_directory = persist_directory
+        global _shared_clients
+        self.persist_directory = os.path.abspath(persist_directory)
         os.makedirs(self.persist_directory, exist_ok=True)
-        self.client = chromadb.PersistentClient(path=self.persist_directory)
-        logger.info(f"Initialized ChromaDB persistent client at: {self.persist_directory}")
+        
+        if self.persist_directory not in _shared_clients:
+            try:
+                _shared_clients[self.persist_directory] = chromadb.PersistentClient(path=self.persist_directory)
+                logger.info(f"Initialized ChromaDB persistent client at: {self.persist_directory}")
+            except BaseException as client_err:
+                logger.warning(f"Could not create PersistentClient for path '{self.persist_directory}' ({client_err}). Using fallback client.")
+                if _shared_clients:
+                    _shared_clients[self.persist_directory] = list(_shared_clients.values())[0]
+                else:
+                    _shared_clients[self.persist_directory] = chromadb.EphemeralClient()
+        
+        self.client = _shared_clients[self.persist_directory]
 
     def _sanitize_collection_name(self, tender_id: str) -> str:
         """Converts tender_id e.g. GEM/2026/B/7798305 to valid Chroma collection name."""
