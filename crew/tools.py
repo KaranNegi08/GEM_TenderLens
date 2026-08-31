@@ -27,14 +27,15 @@ except ImportError:
 
 class SearchInput(BaseModel):
     """Input schema for search tool."""
-    query: str = Field(..., description="Tender requirement or clause search query")
+    query: str = Field(..., description="Tender requirement, clause, or vendor search query")
     tender_id: str = Field(..., description="GeM Tender ID string")
+    document_type: Optional[str] = Field(None, description="Optional document type filter: 'corrigendum', 'bid_document', or 'vendor_proposal'")
 
 
 class TenderSearchTool(BaseTool):
     """Tool for querying tender knowledge base in ChromaDB."""
     name: str = "search_tender_clause"
-    description: str = "Search for specific GeM tender clauses, technical specifications, or BOQ details."
+    description: str = "Search for specific GeM tender clauses, corrigenda updates, technical specifications, or vendor proposal details."
     args_schema: Type[BaseModel] = SearchInput
     _retriever: Any = PrivateAttr(default=None)
 
@@ -42,19 +43,24 @@ class TenderSearchTool(BaseTool):
         super().__init__(**kwargs)
         self._retriever = retriever or KnowledgeRetriever()
 
-    def _run(self, query: str, tender_id: str) -> str:
+    def _run(self, query: str, tender_id: str, document_type: Optional[str] = None) -> str:
         """Executes retrieval and formats clause citations."""
-        logger.info(f"TenderSearchTool executing query '{query}' for tender '{tender_id}'")
+        logger.info(f"TenderSearchTool executing query '{query}' for tender '{tender_id}' (doc_type: {document_type})")
         try:
-            results = self._retriever.search_tender_knowledge(tender_id, query, n_results=3)
+            results = self._retriever.search_tender_knowledge(
+                tender_id=tender_id,
+                query=query,
+                n_results=4,
+                document_type=document_type
+            )
             if not results:
-                return "No matching tender clauses found in ChromaDB."
+                return f"No matching tender clauses or documents found in ChromaDB for '{query}'."
 
             formatted = []
             for r in results:
                 meta = r["metadata"]
                 formatted.append(
-                    f"[Source: {meta.get('source_file')}, Page: {meta.get('page_number')}, Clause: {meta.get('clause_id')}]\n"
+                    f"[Source: {meta.get('source_file')}, DocType: {meta.get('document_type', 'unknown')}, Page: {meta.get('page_number')}, Clause: {meta.get('clause_id')}]\n"
                     f"{r['text']}"
                 )
             return "\n\n---\n\n".join(formatted)
