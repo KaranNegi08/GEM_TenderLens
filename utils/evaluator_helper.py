@@ -63,9 +63,11 @@ def evaluate_generic_requirement(
     if "warranty" in req_text:
         w_months = _get_prop("warranty_months", 12)
         required_w = 12
-        if "3-yr" in req_text or "3 yr" in req_text or "3 year" in req_text or "36 month" in req_text:
+        if any(w in req_text for w in ["5-yr", "5 yr", "5 year", "5yr", "60 month"]):
+            required_w = 60
+        elif any(w in req_text for w in ["3-yr", "3 yr", "3 year", "3yr", "36 month"]):
             required_w = 36
-        elif "2-yr" in req_text or "2 yr" in req_text or "2 year" in req_text or "24 month" in req_text:
+        elif any(w in req_text for w in ["2-yr", "2 yr", "2 year", "2yr", "24 month"]):
             required_w = 24
 
         if w_months >= required_w:
