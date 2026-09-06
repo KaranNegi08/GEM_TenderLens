@@ -138,29 +138,37 @@ class ComparisonService:
         findings = []
         stored_requirements = TenderService.get_stored_requirements(tender_id)
 
-        # Fallback Guard: If no requirements are stored in DB for this tender_id, use standard fallback lists
+        # Dynamic ChromaDB Retrieval Fallback: If no requirements are saved in DB for this tender_id,
+        # query ChromaDB for indexed bid document requirement chunks dynamically.
         if not stored_requirements:
-            is_books_tender = "7798305" in tender_id.lower() or "book" in tender_id.lower()
-            if is_books_tender:
-                stored_requirements = [
-                    {"requirement_id": "REQ_001", "name": "Item Category: Technical Books Specification", "requirement_text": "Item Category: Technical Books Specification", "clause_id": "REQ_001"},
-                    {"requirement_id": "REQ_002", "name": "Delivery Period (<= 21 Days to Destination)", "requirement_text": "Delivery Period (<= 21 Days to Destination)", "clause_id": "REQ_002"},
-                    {"requirement_id": "REQ_003", "name": "Past Experience Criteria (2 Years / Past Performance)", "requirement_text": "Past Experience Criteria (2 Years / Past Performance)", "clause_id": "REQ_003"},
-                    {"requirement_id": "REQ_004", "name": "Financial Turnover & Commercial Criteria", "requirement_text": "Financial Turnover & Commercial Criteria", "clause_id": "REQ_004"},
-                    {"requirement_id": "REQ_005", "name": "MSE Purchase Preference Eligibility", "requirement_text": "MSE Purchase Preference Eligibility", "clause_id": "REQ_005"}
+            try:
+                bid_chunks = self.retriever.search_tender_knowledge(
+                    tender_id=tender_id,
+                    query="mandatory requirement technical specification boq clause eligibility warranty delivery",
+                    n_results=8
+                )
+                dynamic_chunks = [
+                    c for c in bid_chunks
+                    if str(c.get("metadata", {}).get("document_type", "")).lower() in ["bid_document", "technical_spec", "boq"]
+                    or "corrigendum" not in str(c.get("metadata", {}).get("document_type", "")).lower()
                 ]
-            else:
-                stored_requirements = [
-                    {"requirement_id": "TS-01", "name": "Laptop: Core i5, 8GB RAM, 512GB SSD, 3-Yr Onsite Warranty", "requirement_text": "Laptop: Core i5, 8GB RAM, 512GB SSD, 3-Yr Onsite Warranty", "clause_id": "TS-01"},
-                    {"requirement_id": "TS-02", "name": "Laser Printer: Monochrome, Duplex, Wifi/Network, 30ppm", "requirement_text": "Laser Printer: Monochrome, Duplex, Wifi/Network, 30ppm", "clause_id": "TS-02"},
-                    {"requirement_id": "TS-03", "name": "UPS 1KVA: Line Interactive, 20 min backup, 2-Yr Warranty", "requirement_text": "UPS 1KVA: Line Interactive, 20 min backup, 2-Yr Warranty", "clause_id": "TS-03"},
-                    {"requirement_id": "TS-04", "name": "Managed Switch: 24-Port Gigabit L2, 48Gbps, 3-Yr Warranty", "requirement_text": "Managed Switch: 24-Port Gigabit L2, 48Gbps, 3-Yr Warranty", "clause_id": "TS-04"},
-                    {"requirement_id": "TS-05", "name": "Ergonomic Office Chair: Mesh Back & Adjustable Armrests", "requirement_text": "Ergonomic Office Chair: Mesh Back & Adjustable Armrests", "clause_id": "TS-05"},
-                    {"requirement_id": "ELIG-01", "name": "OEM Authorization Certificate Submission", "requirement_text": "OEM Authorization Certificate Submission", "clause_id": "ELIG-01"},
-                    {"requirement_id": "ELIG-02", "name": "ISO 9001 Quality Certification", "requirement_text": "ISO 9001 Quality Certification", "clause_id": "ELIG-02"},
-                    {"requirement_id": "ELIG-03", "name": "Past Performance & Supply Orders", "requirement_text": "Past Performance & Supply Orders", "clause_id": "ELIG-03"},
-                    {"requirement_id": "ELIG-04", "name": "MSE / Udyam Registration & Declarations", "requirement_text": "MSE / Udyam Registration & Declarations", "clause_id": "ELIG-04"}
-                ]
+                for idx, chunk in enumerate(dynamic_chunks, start=1):
+                    meta = chunk.get("metadata", {})
+                    c_id = meta.get("clause_id") or f"CLAUSE_{idx}"
+                    txt_snippet = chunk.get("text", "")[:120].strip()
+                    stored_requirements.append({
+                        "requirement_id": meta.get("requirement_id") or c_id or f"REQ_{idx}",
+                        "name": txt_snippet if txt_snippet else f"Requirement {idx}",
+                        "requirement_text": chunk.get("text", ""),
+                        "clause_id": c_id,
+                        "page_number": meta.get("page_number", 1)
+                    })
+            except Exception as search_err:
+                logger.warning(f"Could not perform dynamic ChromaDB search for requirements of tender '{tender_id}': {search_err}")
+
+        if not stored_requirements:
+            logger.info(f"No stored or indexed requirements found for tender '{tender_id}'")
+            return findings
 
         # 1. Live Multi-Hop Retrieval: Query ChromaDB for active tender corrigenda / amendments
         live_corrigenda_chunks = []
@@ -204,17 +212,11 @@ class ComparisonService:
                 req_name = req.get("name") or req.get("requirement_name") or req.get("requirement_text", "")[:80]
                 clause_id = req.get("clause_id") or r_id
 
-                is_books_tender = "7798305" in tender_id.lower() or "book" in tender_id.lower()
-                if r_id in ["REQ_001", "REQ_002", "REQ_003", "REQ_004", "REQ_005"] and is_books_tender:
-                    status, explanation, confidence = self._evaluate_books_req(r_id, combined_vendor_text, prop, corrigendum_text=corrigendum_combined_text)
-                elif r_id in ["TS-01", "TS-02", "TS-03", "TS-04", "TS-05", "ELIG-01", "ELIG-02", "ELIG-03", "ELIG-04"] and not is_books_tender:
-                    status, explanation, confidence = self._evaluate_hardware_req(r_id, combined_vendor_text, corrigendum_text=corrigendum_combined_text)
-                else:
-                    status, explanation, confidence = evaluate_generic_requirement(
-                        req, combined_vendor_text, prop,
-                        corrigendum_text=corrigendum_combined_text,
-                        vendor_evidence_text=live_vendor_text
-                    )
+                status, explanation, confidence = evaluate_generic_requirement(
+                    req, combined_vendor_text, prop,
+                    corrigendum_text=corrigendum_combined_text,
+                    vendor_evidence_text=live_vendor_text
+                )
 
                 # Determine Tender Citation (referencing Corrigendum if live corrigendum chunk matches requirement)
                 tender_source_file = f"GeM_Bid_{tender_id}.pdf"
@@ -271,113 +273,6 @@ class ComparisonService:
                 })
 
         return findings
-
-
-    @staticmethod
-    def _evaluate_books_req(r_id: str, full_text: str, prop: Any, corrigendum_text: str = "") -> Tuple[str, str, float]:
-        """Evaluates compliance for books tender requirements (REQ_001 - REQ_005)."""
-        corr_lower = (corrigendum_text or "").lower()
-        if r_id == "REQ_001":
-            if "book" in full_text or "author" in full_text or "title" in full_text:
-                return "compliant", "All required book titles and quantities matched.", 0.95
-            return "partial", "Line-by-line book title verification required.", 0.75
-
-        if r_id == "REQ_002":
-            d_days = getattr(prop, "delivery_days", 21) if hasattr(prop, "delivery_days") else (prop.get("delivery_days", 21) if isinstance(prop, dict) else 21)
-            max_days = 21
-            if "14 days" in corr_lower or "15 days" in corr_lower:
-                max_days = 14 if "14 days" in corr_lower else 15
-            if d_days <= max_days:
-                return "compliant", f"Offered delivery period ({d_days} days) meets mandatory {max_days}-day schedule.", 0.95
-            return "non_compliant", f"Offered delivery period ({d_days} days) exceeds mandatory limit of {max_days} days.", 0.90
-
-        if r_id == "REQ_003":
-            if "experience" in full_text or "past performance" in full_text or "order" in full_text:
-                return "compliant", "Past experience certificates attached.", 0.95
-            return "review_required", "No explicit past experience certificate attached.", 0.65
-
-        if r_id == "REQ_004":
-            if "turnover" in full_text or "balance sheet" in full_text or "mse" in full_text:
-                return "compliant", "Turnover criteria met (or relaxed for MSE/Startup).", 0.95
-            return "review_required", "Turnover document missing.", 0.70
-
-        if r_id == "REQ_005":
-            if "udyam" in full_text or "mse" in full_text:
-                return "compliant", "Valid Udyam MSE certificate submitted.", 0.95
-            return "partial", "Standard non-MSE procurement rules apply.", 0.95
-
-        return "compliant", "Fully compliant with documentary proof provided.", 0.95
-
-    @staticmethod
-    def _evaluate_hardware_req(r_id: str, full_text: str, corrigendum_text: str = "") -> Tuple[str, str, float]:
-        """Evaluates compliance for hardware tender requirements (TS-01 - TS-05, ELIG-01 - ELIG-04)."""
-        corr_lower = (corrigendum_text or "").lower()
-
-        if r_id == "TS-01":
-            if "laptop" in full_text:
-                required_warranty = 3
-                if "5 year" in corr_lower or "5-yr" in corr_lower or "60 month" in corr_lower:
-                    required_warranty = 5
-                laptop_snippet = "\n".join([l for l in full_text.splitlines() if "laptop" in l or "core i5" in l or "war-01" in l or "warranty" in l])
-                if required_warranty == 5 and not any(w in laptop_snippet for w in ["5 year", "5-yr", "5yr", "60 month"]):
-                    return "non_compliant", f"Offered laptop warranty is below latest corrigendum requirement ({required_warranty} years).", 0.95
-                if any(w in laptop_snippet for w in ["2 year", "2-yr", "2yr", "2 years"]):
-                    return "non_compliant", f"Offered laptop warranty (2 years on-site) is below mandatory {required_warranty}-year requirement.", 0.95
-                return "compliant", f"Core i5, 8GB RAM, 512GB SSD, {required_warranty}-year warranty satisfied.", 0.95
-            return "review_required", "Laptop specification details missing.", 0.60
-
-
-        if r_id == "TS-02":
-            if "printer" in full_text or "laser" in full_text:
-                return "compliant", "Monochrome, network/wifi, duplex, 30ppm, 2-year warranty satisfied.", 0.95
-            return "review_required", "Printer specification missing.", 0.60
-
-        if r_id == "TS-03":
-            if "ups" in full_text or "1kva" in full_text:
-                return "compliant", "UPS 1KVA Line Interactive, 20 min backup satisfied.", 0.95
-            return "review_required", "UPS specification missing.", 0.95
-
-        if r_id == "TS-04":
-            if "switch" in full_text or "24-port" in full_text:
-                return "compliant", "24-Port Managed Gigabit Switch, 48Gbps, 3-year warranty satisfied.", 0.95
-            return "review_required", "Switch specification missing.", 0.95
-
-        if r_id == "TS-05":
-            if "chair" in full_text or "armrest" in full_text:
-                if "fixed" in full_text or "non-adjustable" in full_text:
-                    return "non_compliant", "Fixed armrests offered; non-compliant with TS-05 mandatory adjustable armrests requirement.", 0.95
-                return "compliant", "Ergonomic chair with height adjustable mesh back & 3D adjustable armrests.", 0.95
-            return "review_required", "Office chair specification missing.", 0.95
-
-        if r_id == "ELIG-01":
-            if any(term in full_text for term in ["7 days", "7 working days", "awaiting renewal", "promised"]):
-                return "review_required", "OEM Authorization Certificate pending submission (promised within 7 working days).", 0.75
-            if "oem" in full_text or "authorization" in full_text:
-                return "compliant", "OEM Authorization Certificate attached and verified.", 0.95
-            return "review_required", "OEM Authorization Certificate missing.", 0.70
-
-        if r_id == "ELIG-02":
-            if "reissued" in full_text or "relocation" in full_text:
-                return "review_required", "ISO certification claimed but certificate number not provided; reissue pending post office relocation.", 0.75
-            if any(term in full_text for term in ["ind-9001", "bds-9001", "certificate no", "cert. no", "iso 9001:2015 certificate"]):
-                return "compliant", "ISO 9001 Quality Certificate attached with verifiable certificate reference number.", 0.95
-            if "iso 9001" in full_text or "iso certified" in full_text:
-                return "review_required", "ISO certification claimed but specific certificate number/reference ID not provided.", 0.75
-            return "review_required", "ISO 9001 Certificate missing.", 0.60
-
-        if r_id == "ELIG-03":
-            if "past" in full_text or "supply" in full_text or "po" in full_text or "dgs&d" in full_text:
-                return "compliant", "Past supply order credentials provided.", 0.95
-            return "review_required", "Past performance certificate missing.", 0.95
-
-        if r_id == "ELIG-04":
-            if "udyam" in full_text or "udyam-dl" in full_text or "udyam-up" in full_text:
-                return "compliant", "Valid Udyam MSE Registration submitted.", 0.95
-            if "blacklisting" in full_text or "declaration" in full_text:
-                return "compliant", "Self-declaration of Non-Blacklisting submitted.", 0.95
-            return "partial", "Standard non-MSE procurement rules apply.", 0.95
-
-        return "compliant", "Fully compliant with documentary proof provided.", 0.95
 
     def _build_risk_queue(
         self,
