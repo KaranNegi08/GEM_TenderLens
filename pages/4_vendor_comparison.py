@@ -106,6 +106,12 @@ if st.session_state.get("comparison_result"):
                 "Rationale & Source Evidence": f["explanation"]
             })
         st.dataframe(trows, use_container_width=True)
+    else:
+        st.warning(
+            f"⚠️ **No Technical Requirements Found for Tender '{st.session_state.active_tender_id}'**\n\n"
+            "No stored or extracted requirements were found in the database or vector store for this tender package. "
+            "Please go to **Page 1 (Tender Workspace)** to upload and process the tender document first."
+        )
 
     st.subheader("3. Risk & Clarification Queue")
     risk_queue = res.get("risk_queue", [])
